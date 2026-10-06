@@ -21,6 +21,7 @@ struct RangeSelectView: View {
     @State private var stopAt: Double = 0
     @State private var observer: Any?
     @State private var error: String?
+    @State private var confirmShort = false
 
     private var duration: Double { info?.duration ?? 0 }
     private var isWhole: Bool { start < 0.05 && end > duration - 0.05 }
@@ -57,7 +58,11 @@ struct RangeSelectView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 Button {
-                    finish(isWhole ? nil : ClipRange(start: start, end: end))
+                    if !isWhole && end - start < min(30, duration * 0.5) {
+                        confirmShort = true
+                    } else {
+                        finish(isWhole ? nil : ClipRange(start: start, end: end))
+                    }
                 } label: {
                     Text(isWhole ? "處理整個檔案" : "處理選取的 \(ProjectModel.clock(end - start))")
                         .font(.headline)
@@ -92,6 +97,13 @@ struct RangeSelectView: View {
             }
         }
         .interactiveDismissDisabled(firstTime)
+        .alert("只處理 \(ProjectModel.clock(end - start))？", isPresented: $confirmShort) {
+            Button("只處理這段") { finish(ClipRange(start: start, end: end)) }
+            Button("處理整個檔案") { finish(nil) }
+            Button("再調整", role: .cancel) {}
+        } message: {
+            Text("選取的範圍很短（\(Self.fine(start)) – \(Self.fine(end))），只有這段會被辨識與輸出。")
+        }
         .task { await load() }
         .onDisappear { stop() }
     }
@@ -235,7 +247,7 @@ private struct RangeWaveform: View {
     @Binding var end: Double
     let playhead: Double?
 
-    private enum Target { case start, end, move }
+    private enum Target { case start, end, move, ignore }
     @State private var target: Target?
     @State private var origin = (start: 0.0, end: 0.0)
 
@@ -244,7 +256,8 @@ private struct RangeWaveform: View {
             let w = geo.size.width
             Canvas { gc, size in draw(gc, size) }
                 .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0)
+                // 要真的橫向拖曳才動，避免上下捲動或點一下就把範圍改掉
+                .gesture(DragGesture(minimumDistance: 8)
                     .onChanged { g in drag(g, width: w) }
                     .onEnded { _ in target = nil })
         }
@@ -268,12 +281,14 @@ private struct RangeWaveform: View {
         if target == nil {
             let sx = x(start, w), ex = x(end, w), px = g.startLocation.x
             let ds = abs(px - sx), de = abs(px - ex)
-            if min(ds, de) < 28 {
+            if abs(g.translation.height) > abs(g.translation.width) {
+                target = .ignore
+            } else if min(ds, de) < 32 {
                 target = ds <= de ? .start : .end
             } else if px > sx && px < ex {
                 target = .move
             } else {
-                target = px < sx ? .start : .end
+                target = .ignore
             }
             origin = (start, end)
         }
@@ -288,7 +303,7 @@ private struct RangeWaveform: View {
             let s = min(max(0, origin.start + d), duration - len)
             start = s
             end = s + len
-        case nil: break
+        case .ignore, nil: break
         }
     }
 

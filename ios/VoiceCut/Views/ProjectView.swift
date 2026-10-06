@@ -18,6 +18,7 @@ struct ProjectView: View {
             case .working: working
             case .failed(let msg): failed(msg)
             case .idle where model.plan.isEmpty && !model.needsRange: idle
+            case .ready where model.plan.isEmpty: noWords
             default: EmptyView()
             }
             if !model.plan.isEmpty {
@@ -68,6 +69,21 @@ struct ProjectView: View {
         }
         .onChange(of: settings.cutReview) { _, _ in model.markStale() }
         .onChange(of: settings.cut) { _, _ in model.markStale() }
+    }
+
+    /// 辨識完成但一個字都沒有
+    private var noWords: some View {
+        Section {
+            Label("沒有辨識到任何字", systemImage: "exclamationmark.bubble")
+                .foregroundStyle(.orange)
+            Button("變更處理範圍", systemImage: "timeline.selection") { showRange = true }
+            Button("換成較準的速度重新辨識", systemImage: "arrow.clockwise") {
+                if settings.speed == .fast { settings.apply(.standard) }
+                model.retranscribe()
+            }
+        } footer: {
+            Text("可能是選取的範圍太短或沒有人聲，或「快速」模型聽不出這段。可以先試聽確認範圍，或改用「標準」再辨識一次。")
+        }
     }
 
     /// 取消後（還沒有辨識結果）：可以重新開始

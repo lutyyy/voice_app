@@ -32,12 +32,11 @@ jobs:
         working-directory: ios/E2E
         run: |
           say -v '?' | grep -Ei 'zh_|chinese' || true
-          VOICE=$(say -v '?' | grep -E 'zh_TW' | head -1 | awk '{print $1}')
-          [ -z "$VOICE" ] && VOICE=$(say -v '?' | grep -E 'zh_' | head -1 | awk '{print $1}')
-          echo "voice=$VOICE"
+          VOICE=Tingting
           TEXT="嗯，大家好，今天我們要來談談數位轉型。呃，其實數位轉型不只是買新的系統，而是要改變做事的方法。然後，那個，我們先看看第一個例子。這家公司原本都用紙本作業，後來全部改成線上流程，效率提升了很多。欸，第二個例子比較有趣，他們用資料來決定要開發什麼產品。"
-          say ${VOICE:+-v "$VOICE"} -o speech.aiff "$TEXT"
-          afconvert -f m4af -d aac -b 128000 speech.aiff test.m4a
+          say -v "$VOICE" -o speech.aiff "$TEXT"
+          afinfo speech.aiff | grep -E "duration|Data format"
+          afconvert -f m4af -d aac@44100 -b 96000 speech.aiff test.m4a
           afconvert -f m4af -d aac@16000 -c 1 speech.aiff test16k.m4a || true
           afinfo test.m4a | grep -E "duration|Data format"
       - name: 加入 App 的程式碼
