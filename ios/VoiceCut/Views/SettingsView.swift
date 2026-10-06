@@ -65,7 +65,7 @@ struct SettingsView: View {
                 } header: {
                     Text("語音辨識（進階）")
                 } footer: {
-                    Text("模型第一次使用時要下載，並由 iPhone 最佳化（約 2～10 分鐘，請連 Wi‑Fi、保持 App 開啟）；可以先按「預先下載並準備」。漏字補抓會把「有聲音但沒有字」的片段再聽一次，救回漏掉的語助詞；反覆補剪會重新辨識成品、補剪殘留的語助詞，品質較好但比較久。")
+                    Text("模型第一次使用時要下載，並由 iPhone 最佳化（約 2～10 分鐘，請連 Wi‑Fi；iOS 26 以上可以切到背景，完成會通知）；可以先按「預先下載並準備」。漏字補抓會把「有聲音但沒有字」的片段再聽一次，救回漏掉的語助詞；反覆補剪會重新辨識成品、補剪殘留的語助詞，品質較好但比較久。")
                 }
 
                 Section {
@@ -124,15 +124,22 @@ struct SettingsView: View {
         preparing = true
         prepareStatus = "準備中…"
         let model = currentModel
+        let title = "準備 \(name(model)) 模型"
+        let bg = BackgroundWork.shared
+        bg.begin(title: title)
         Task {
             do {
                 try await Transcriber.shared.load(model: model) { p, s in
                     Task { @MainActor in
                         prepareStatus = p.isNaN ? s + "…" : "\(s) \(Int(p * 100))%"
+                        bg.update(p.isNaN ? nil : p, step: s)
                     }
                 }
+                prepareStatus = ""
+                bg.end(success: true, message: "模型準備好了，可以開始處理", title: title)
             } catch {
                 prepareStatus = "失敗：\(error.localizedDescription)"
+                bg.end(success: false, message: prepareStatus, title: title)
             }
             preparing = false
         }

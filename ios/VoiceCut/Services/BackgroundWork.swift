@@ -19,13 +19,18 @@ final class BackgroundWork {
     private var ticker: Timer?
     /// 目前有沒有工作在跑（系統可能在工作結束後才啟動背景工作）
     private var active = false
+    /// 同時在跑的工作數（例如預先下載模型時又開始處理專案）
+    private var users = 0
 
     /// 開始一段工作（使用者按下按鈕時呼叫，App 在前景）
     func begin(title: String) {
+        users += 1
         self.title = title
         active = true
-        subtitle = ""
-        fraction = 0
+        if users == 1 {
+            subtitle = ""
+            fraction = 0
+        }
         askNotificationPermission()
         if graceID == .invalid {
             graceID = UIApplication.shared.beginBackgroundTask(withName: "VoiceCut") { [weak self] in
@@ -43,11 +48,14 @@ final class BackgroundWork {
     }
 
     /// 工作結束；在背景時發通知
-    func end(success: Bool, message: String) {
-        active = false
+    func end(success: Bool, message: String, title doneTitle: String? = nil) {
         if UIApplication.shared.applicationState != .active {
-            notify(title: success ? "\(title)：完成" : title, body: message)
+            let t = doneTitle ?? title
+            notify(title: success ? "\(t)：完成" : t, body: message)
         }
+        users = max(0, users - 1)
+        guard users == 0 else { return }
+        active = false
         if #available(iOS 26.0, *) { finishContinued(success) }
         endGrace()
     }
