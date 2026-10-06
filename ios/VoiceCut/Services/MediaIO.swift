@@ -27,7 +27,8 @@ enum MediaError: LocalizedError {
 
 enum MediaIO {
     static func info(_ url: URL) async throws -> MediaInfo {
-        let asset = AVURLAsset(url: url)
+        // mp3 等格式預設只估算長度，要求精確計算
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let duration = try await asset.load(.duration).seconds
         guard let audio = try await asset.loadTracks(withMediaType: .audio).first else { throw MediaError.noAudio }
         var sr = 44100, ch = 1

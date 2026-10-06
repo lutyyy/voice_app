@@ -75,7 +75,17 @@ struct ProjectView: View {
                 } else {
                     ProgressView().frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Text("處理時請讓 App 保持在前景、不要鎖定螢幕。10 分鐘的錄音約需數分鐘。")
+                TimelineView(.periodic(from: model.stepStarted, by: 1)) { ctx in
+                    Text("已經過 " + ProjectModel.clock(ctx.date.timeIntervalSince(model.stepStarted)))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if model.step == Transcriber.optimizing {
+                    Text("第一次使用這個模型時，iPhone 要把模型最佳化給神經網路引擎，約需 2～10 分鐘，期間畫面不會有變化，請耐心等候。完成後會記住，之後只要幾秒。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Text("處理時請讓 App 保持在前景、不要鎖定螢幕。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("取消", role: .destructive) { model.cancel() }

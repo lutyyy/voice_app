@@ -5,6 +5,9 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var key = ""
     @State private var keySaved = false
+    @ObservedObject private var transcriber = Transcriber.shared
+    @State private var preparing = false
+    @State private var prepareStatus = ""
 
     var body: some View {
         NavigationStack {
@@ -23,10 +26,25 @@ struct SettingsView: View {
                     Stepper("反覆補剪：\(settings.refineRounds == 0 ? "不做" : "\(settings.refineRounds) 輪")",
                             value: $settings.refineRounds, in: 0...3)
                     TextField("提示詞（專有名詞，可留空）", text: $settings.prompt)
+                    if transcriber.readyModel == currentModel {
+                        Label("\(name(currentModel)) 模型已準備好", systemImage: "checkmark.circle")
+                            .foregroundStyle(.green)
+                    } else {
+                        Button {
+                            prepareModel()
+                        } label: {
+                            Label(preparing ? prepareStatus : "預先下載並準備 \(name(currentModel)) 模型",
+                                  systemImage: preparing ? "hourglass" : "arrow.down.circle")
+                        }
+                        .disabled(preparing)
+                        if !preparing, prepareStatus.hasPrefix("失敗") {
+                            Text(prepareStatus).font(.caption).foregroundStyle(.red)
+                        }
+                    }
                 } header: {
                     Text("語音辨識")
                 } footer: {
-                    Text("模型第一次使用時會下載。漏字補抓會把「有聲音但沒有字」的片段再聽一次，救回漏掉的語助詞；反覆補剪會重新辨識成品、補剪殘留的語助詞，品質較好但比較久。")
+                    Text("模型第一次使用時要下載，並由 iPhone 最佳化（約 2～10 分鐘，請連 Wi‑Fi、保持 App 開啟）；可以先按「預先下載並準備」。漏字補抓會把「有聲音但沒有字」的片段再聽一次，救回漏掉的語助詞；反覆補剪會重新辨識成品、補剪殘留的語助詞，品質較好但比較久。")
                 }
 
                 Section {
@@ -89,6 +107,28 @@ struct SettingsView: View {
             .onChange(of: settings.keepPause) { _, v in
                 if settings.maxPause < v { settings.maxPause = v }
             }
+        }
+    }
+
+    private var currentModel: String {
+        settings.model.isEmpty ? Transcriber.defaultModel : settings.model
+    }
+
+    private func prepareModel() {
+        preparing = true
+        prepareStatus = "準備中…"
+        let model = currentModel
+        Task {
+            do {
+                try await Transcriber.shared.load(model: model) { p, s in
+                    Task { @MainActor in
+                        prepareStatus = p.isNaN ? s + "…" : "\(s) \(Int(p * 100))%"
+                    }
+                }
+            } catch {
+                prepareStatus = "失敗：\(error.localizedDescription)"
+            }
+            preparing = false
         }
     }
 

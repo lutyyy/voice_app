@@ -3,7 +3,8 @@ import Foundation
 import WhisperKit
 
 /// 在 iPhone 上用 WhisperKit 辨識（對應 autocut.py 的 asr／fill_gaps）
-final class Transcriber {
+@MainActor
+final class Transcriber: ObservableObject {
     static let shared = Transcriber()
 
     /// 在提示中放語助詞，Whisper 比較願意把「嗯、呃」寫出來，而不是自動美化掉；用繁體字也比較不會輸出簡體
@@ -38,25 +39,46 @@ final class Transcriber {
 
     private var pipe: WhisperKit?
     private var loaded: String?
+    private var loading: (model: String, task: Task<Void, Error>)?
+    /// 目前準備好的模型（設定頁顯示用）
+    @Published private(set) var readyModel: String?
 
+    /// 下載並載入模型。progress 的進度為 nan 時代表無法估計（例如最佳化中）。
+    /// 同一個模型正在載入時不會重複載入，等前一次完成即可
     func load(model: String, progress: @escaping (Double, String) -> Void) async throws {
         if loaded == model, pipe != nil { return }
+        if let l = loading, l.model == model {
+            progress(.nan, Self.optimizing)
+            try await l.task.value
+            return
+        }
         pipe = nil
         loaded = nil
-        progress(0, "下載辨識模型（只有第一次需要）")
-        let folder = try await WhisperKit.download(variant: model, progressCallback: { p in
-            progress(p.fractionCompleted, "下載辨識模型（只有第一次需要）")
-        })
-        progress(1, "載入辨識模型（第一次會花幾分鐘最佳化）")
-        let config = WhisperKitConfig(model: model, modelFolder: folder.path, verbose: false, logLevel: .error,
-                                      prewarm: true, load: true, download: false)
-        pipe = try await WhisperKit(config)
-        loaded = model
+        readyModel = nil
+        let task = Task { [self] in
+            progress(0, "下載辨識模型（只有第一次需要）")
+            let folder = try await WhisperKit.download(variant: model, progressCallback: { p in
+                progress(p.fractionCompleted, "下載辨識模型（只有第一次需要）")
+            })
+            progress(.nan, Self.optimizing)
+            let config = WhisperKitConfig(model: model, modelFolder: folder.path, verbose: false, logLevel: .error,
+                                          prewarm: true, load: true, download: false)
+            let p = try await WhisperKit(config)
+            pipe = p
+            loaded = model
+            readyModel = model
+        }
+        loading = (model, task)
+        defer { if loading?.model == model { loading = nil } }
+        try await task.value
     }
+
+    static let optimizing = "載入並最佳化辨識模型"
 
     func unload() {
         pipe = nil
         loaded = nil
+        readyModel = nil
     }
 
     private func tokens(_ prompt: String) -> [Int]? {

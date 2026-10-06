@@ -16,6 +16,8 @@ final class ProjectModel: ObservableObject {
     @Published private(set) var stage: Stage = .idle
     @Published private(set) var step = ""
     @Published private(set) var progress: Double?
+    /// 目前步驟開始的時間（畫面顯示「已經過」）
+    @Published private(set) var stepStarted = Date()
     @Published private(set) var log: [String] = []
     /// 標記結果（每個字一列；refine 補剪的列也寫回這裡）
     @Published private(set) var plan: [Word] = []
@@ -59,8 +61,15 @@ final class ProjectModel: ObservableObject {
 
     private func say(_ s: String, _ p: Double? = nil) {
         step = s
+        stepStarted = Date()
         progress = p
         log.append(s)
+    }
+
+    /// 給 Transcriber 等回報進度用：nan 代表無法估計，畫面改成轉圈圈
+    private func report(_ p: Double, _ s: String) {
+        if step != s { say(s) }
+        progress = p.isNaN ? nil : p
     }
 
     func cancel() {
@@ -99,8 +108,11 @@ final class ProjectModel: ObservableObject {
 
     /// 重新辨識（刪除逐字稿與標記，從頭來）
     func retranscribe() {
-        for f in ["words.json", "plan.json"] { try? FileManager.default.removeItem(at: url(f)) }
+        for f in ["words.json", "plan.json", "pcm.f32"] { try? FileManager.default.removeItem(at: url(f)) }
         plan = []
+        meta.info = nil
+        analysis = nil
+        pcm = nil
         meta.deletes = nil
         meta.outputStale = true
         saveMeta()
@@ -120,10 +132,7 @@ final class ProjectModel: ObservableObject {
                 let audio = try await MediaIO.decode16k(sourceURL) { p in Task { @MainActor in self.progress = p } }
                 let model = settings.model.isEmpty ? Transcriber.defaultModel : settings.model
                 try await Transcriber.shared.load(model: model) { p, s in
-                    Task { @MainActor in
-                        if self.step != s { self.say(s) }
-                        self.progress = p
-                    }
+                    Task { @MainActor in self.report(p, s) }
                 }
                 say("語音辨識中…", 0)
                 let prompt = settings.prompt.isEmpty ? Transcriber.defaultPrompt : settings.prompt + "，" + Transcriber.defaultPrompt
@@ -327,7 +336,10 @@ final class ProjectModel: ObservableObject {
         guard let out = outputURL else { return 0 }
         let audio = try await MediaIO.decode16k(out)
         let model = settings.model.isEmpty ? Transcriber.defaultModel : settings.model
-        try await Transcriber.shared.load(model: model) { _, _ in }
+        try await Transcriber.shared.load(model: model) { p, s in
+            Task { @MainActor in self.report(p, s) }
+        }
+        say("第 \(rnd) 輪：重新辨識成品…", 0)
         let prompt = settings.prompt.isEmpty ? Transcriber.defaultPrompt : settings.prompt + "，" + Transcriber.defaultPrompt
         var words = try await Transcriber.shared.transcribe(audio, prompt: prompt) { p in
             Task { @MainActor in self.progress = p }
