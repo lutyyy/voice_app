@@ -243,7 +243,7 @@ final class ProjectModel: ObservableObject {
                 }
                 enter("asr")
                 say("語音辨識中…", 0)
-                let prompt = settings.prompt.isEmpty ? Transcriber.defaultPrompt : settings.prompt + "，" + Transcriber.defaultPrompt
+                let prompt: String? = settings.prompt.isEmpty ? nil : settings.prompt
                 words = try await Transcriber.shared.transcribe(audio, prompt: prompt, progress: { p in
                     Task { @MainActor in self.progress = p }
                 }, onText: { t in
@@ -671,7 +671,7 @@ final class ProjectModel: ObservableObject {
             Task { @MainActor in self.report(p, s) }
         }
         say("第 \(rnd) 輪：重新辨識成品…", 0)
-        let prompt = settings.prompt.isEmpty ? Transcriber.defaultPrompt : settings.prompt + "，" + Transcriber.defaultPrompt
+        let prompt: String? = settings.prompt.isEmpty ? nil : settings.prompt
         var words = try await Transcriber.shared.transcribe(audio, prompt: prompt, progress: { p in
             Task { @MainActor in self.progress = p }
         }, onText: { t in

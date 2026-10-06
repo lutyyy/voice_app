@@ -67,6 +67,12 @@ jobs:
         continue-on-error: true
         working-directory: ios/E2E
         run: .build/release/E2E en.m4a openai_whisper-base --diag
+      - name: 有提示詞（快速，提示詞無效時應自動重試）
+        continue-on-error: true
+        working-directory: ios/E2E
+        env:
+          E2E_PROMPT: 數位轉型，藍湖策略
+        run: .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB 0 15
       - name: 整個檔案（tiny）
         continue-on-error: true
         working-directory: ios/E2E

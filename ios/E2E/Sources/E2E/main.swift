@@ -27,6 +27,8 @@ let src = try MappedPCM(url: raw, sampleRate: info.sampleRate, channels: info.ch
 let analysis = Analysis(src: src)
 print("speech spans:", analysis.speech.count)
 
+print("簡轉繁:", Transcriber.traditional("数位转型后，效率提升了很多"))
+if Transcriber.traditional("数位转型") != "數位轉型" { fail("簡轉繁沒有作用") }
 let peaks = try await MediaIO.peaks(url, duration: try await MediaIO.info(url).duration, bins: 320)
 print("peaks:", peaks.count)
 if peaks.isEmpty { fail("聲波是空的") }
@@ -42,7 +44,8 @@ if peak < 0.001 || peak > 100 { fail("16k 音訊數值異常") }
 let t0 = Date()
 try await Transcriber.shared.load(model: model) { p, s in if !p.isNaN { _ = p } else { print(s) } }
 print("model loaded in \(Int(Date().timeIntervalSince(t0))) s")
-let words = try await Transcriber.shared.transcribe(audio, prompt: Transcriber.defaultPrompt, progress: { _ in },
+let userPrompt = ProcessInfo.processInfo.environment["E2E_PROMPT"]
+let words = try await Transcriber.shared.transcribe(audio, prompt: userPrompt, progress: { _ in },
                                                     onText: { print("  live:", $0) })
 print("words:", words.count)
 print("text:", words.map(\.text).joined())
@@ -56,7 +59,7 @@ if words.isEmpty || CommandLine.arguments.contains("--diag") {
                                                      logLevel: .error, prewarm: false, load: true, download: false))
     print("diagnostic pipe: CPU only")
     let tok = pipe.tokenizer!
-    let prompt = tok.encode(text: " " + Transcriber.defaultPrompt).filter { $0 < tok.specialTokens.specialTokenBegin }
+    let prompt = tok.encode(text: " 嗯，這個，呃，就是說，我們今天，然後，那個，欸，對，我覺得啊，喔。").filter { $0 < tok.specialTokens.specialTokenBegin }
     let variants: [(String, DecodingOptions)] = [
         ("app", DecodingOptions(task: .transcribe, language: "zh", temperature: 0, usePrefillPrompt: true, skipSpecialTokens: true,
                                 wordTimestamps: true, promptTokens: prompt, chunkingStrategy: .vad)),

@@ -7,8 +7,6 @@ import WhisperKit
 final class Transcriber: ObservableObject {
     static let shared = Transcriber()
 
-    /// 在提示中放語助詞，Whisper 比較願意把「嗯、呃」寫出來，而不是自動美化掉；用繁體字也比較不會輸出簡體
-    static let defaultPrompt = "嗯，這個，呃，就是說，我們今天，然後，那個，欸，對，我覺得啊，喔。"
     static let fillerPrompt = "嗯，呃，欸，啊，喔"
 
     struct ModelChoice: Identifiable {
@@ -118,19 +116,32 @@ final class Transcriber: ObservableObject {
             .filter { $0 < tok.specialTokens.specialTokenBegin }
     }
 
-    /// 主辨識：逐字時間碼。audio 為 16kHz 單聲道；onText 會收到剛辨識出的句子（畫面即時顯示用）
-    func transcribe(_ audio: [Float], prompt: String, progress: @escaping (Double) -> Void,
+    /// 主辨識：逐字時間碼。audio 為 16kHz 單聲道；prompt 是使用者填的專有名詞（可為 nil）；
+    /// onText 會收到剛辨識出的句子（畫面即時顯示用）。
+    /// 實測（CI 上用合成中文語音）：提示詞會讓 Large v3 Turbo 整段輸出空白，所以預設不加提示詞；
+    /// 有提示詞但辨識不出字時，自動拿掉提示詞再試一次
+    func transcribe(_ audio: [Float], prompt: String?, progress: @escaping (Double) -> Void,
                     onText: ((String) -> Void)? = nil) async throws -> [Word] {
+        let p = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let p, !p.isEmpty {
+            let words = try await transcribeOnce(audio, prompt: p, progress: progress, onText: onText)
+            if !words.isEmpty { return words }
+        }
+        return try await transcribeOnce(audio, prompt: nil, progress: progress, onText: onText)
+    }
+
+    private func transcribeOnce(_ audio: [Float], prompt: String?, progress: @escaping (Double) -> Void,
+                                onText: ((String) -> Void)?) async throws -> [Word] {
         guard let pipe else { throw MediaError.readFailed("模型尚未載入") }
         let total = Double(audio.count) / 16000
         let opts = DecodingOptions(
             task: .transcribe, language: "zh", temperature: 0, usePrefillPrompt: true, skipSpecialTokens: true,
-            wordTimestamps: true, promptTokens: tokens(prompt), chunkingStrategy: .vad)
+            wordTimestamps: true, promptTokens: prompt.flatMap { tokens($0) }, chunkingStrategy: .vad)
         pipe.segmentDiscoveryCallback = { segs in
             if let e = segs.map(\.end).max(), total > 0 { progress(min(1, Double(e) / total)) }
             if let onText {
                 for s in segs {
-                    let t = Self.clean(s.text)
+                    let t = Self.traditional(Self.clean(s.text))
                     if !t.isEmpty { onText(t) }
                 }
             }
@@ -144,15 +155,34 @@ final class Transcriber: ObservableObject {
         var si = 0
         let segments = results.flatMap(\.segments).sorted { $0.start < $1.start }
         for s in segments {
+            var added = false
             for w in s.words ?? [] {
-                let text = w.word.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = Self.traditional(w.word.trimmingCharacters(in: .whitespacesAndNewlines))
                 if text.isEmpty || text.hasPrefix("<|") { continue }
                 words.append(Word(seg: si, start: r3(Double(w.start)), end: r3(Double(w.end)), text: text,
                                   prob: (Double(w.probability) * 1000).rounded() / 1000))
+                added = true
             }
-            si += 1
+            // 沒有逐字時間（對齊失敗）時，用整句的時間平均分給每個字，至少不會漏掉整句
+            if !added {
+                let chars = Self.traditional(Self.clean(s.text)).filter { !$0.isWhitespace && !$0.isPunctuation }.map(String.init)
+                if !chars.isEmpty, s.end > s.start {
+                    let step = Double(s.end - s.start) / Double(chars.count)
+                    for (k, c) in chars.enumerated() {
+                        let a = Double(s.start) + step * Double(k)
+                        words.append(Word(seg: si, start: r3(a), end: r3(a + step), text: c, prob: 0.5))
+                    }
+                    added = true
+                }
+            }
+            if added { si += 1 }
         }
         return words
+    }
+
+    /// 簡體轉繁體（Whisper 指定中文時常輸出簡體）
+    nonisolated static func traditional(_ text: String) -> String {
+        text.applyingTransform(StringTransform(rawValue: "Hans-Hant"), reverse: false) ?? text
     }
 
     /// 單獨辨識一小段（前後補 0.5 秒靜音），回傳文字與最低平均 log 機率
@@ -163,7 +193,7 @@ final class Transcriber: ObservableObject {
                                    skipSpecialTokens: true, promptTokens: tokens(Self.fillerPrompt))
         let results = try await pipe.transcribe(audioArray: pad + clip + pad, decodeOptions: opts)
         let segs = results.flatMap(\.segments)
-        let text = segs.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = Self.traditional(segs.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines))
         return (text, Double(segs.map(\.avgLogprob).min() ?? 0))
     }
 
