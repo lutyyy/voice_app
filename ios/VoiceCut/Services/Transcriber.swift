@@ -87,8 +87,9 @@ final class Transcriber: ObservableObject {
             .filter { $0 < tok.specialTokens.specialTokenBegin }
     }
 
-    /// 主辨識：逐字時間碼。audio 為 16kHz 單聲道
-    func transcribe(_ audio: [Float], prompt: String, progress: @escaping (Double) -> Void) async throws -> [Word] {
+    /// 主辨識：逐字時間碼。audio 為 16kHz 單聲道；onText 會收到剛辨識出的句子（畫面即時顯示用）
+    func transcribe(_ audio: [Float], prompt: String, progress: @escaping (Double) -> Void,
+                    onText: ((String) -> Void)? = nil) async throws -> [Word] {
         guard let pipe else { throw MediaError.readFailed("模型尚未載入") }
         let total = Double(audio.count) / 16000
         let opts = DecodingOptions(
@@ -96,6 +97,12 @@ final class Transcriber: ObservableObject {
             wordTimestamps: true, promptTokens: tokens(prompt), chunkingStrategy: .vad)
         pipe.segmentDiscoveryCallback = { segs in
             if let e = segs.map(\.end).max(), total > 0 { progress(min(1, Double(e) / total)) }
+            if let onText {
+                for s in segs {
+                    let t = Self.clean(s.text)
+                    if !t.isEmpty { onText(t) }
+                }
+            }
         }
         defer { pipe.segmentDiscoveryCallback = nil }
         let results = try await pipe.transcribe(audioArray: audio, decodeOptions: opts, callback: { _ in
@@ -127,6 +134,12 @@ final class Transcriber: ObservableObject {
         let segs = results.flatMap(\.segments)
         let text = segs.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
         return (text, Double(segs.map(\.avgLogprob).min() ?? 0))
+    }
+
+    /// 去掉 <|0.00|> 之類的特殊標記
+    nonisolated static func clean(_ text: String) -> String {
+        text.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func r3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }

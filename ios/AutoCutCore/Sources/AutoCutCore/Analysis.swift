@@ -110,6 +110,18 @@ public struct Analysis: Sendable {
         self.noise = noise
     }
 
+    /// 畫面用的聲波概覽：切成 bins 段，每段取最大音量，換算成 0～1（底噪 = 0、最大聲 = 1）
+    public func overview(bins: Int) -> [Float] {
+        guard bins > 0, !E.isEmpty else { return [] }
+        let peak = E.max() ?? floor
+        let range = max(1, peak - floor)
+        return (0..<bins).map { b in
+            let lo = b * E.count / bins, hi = max(lo + 1, (b + 1) * E.count / bins)
+            let m = E[lo..<min(hi, E.count)].max() ?? floor
+            return min(1, max(0, (m - floor) / range))
+        }
+    }
+
     /// 取最安靜、沒有人聲的片段，算出底噪的平均頻譜。
     /// 不直接複製原音：口語錄音常常找不到夠長的純靜音，短片段重複貼上會聽得出來、甚至帶到人聲
     static func noiseProfile(src: PCMSource, E: [Float], speech: [Span], hop: Int, floor: Float) -> NoiseProfile? {

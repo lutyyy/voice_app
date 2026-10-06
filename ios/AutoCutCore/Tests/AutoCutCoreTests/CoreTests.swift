@@ -138,6 +138,17 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(Refiner.merge(found, segs: segs, into: &raw, round: 2), 0)
     }
 
+    func testOverview() {
+        let E: [Float] = [-60, -60, -20, -40, -60, -60, -30, -60]
+        let a = Analysis(sampleRate: 200, hop: 1, E: E, floor: -60, speech: [])
+        let o = a.overview(bins: 4)
+        XCTAssertEqual(o.count, 4)
+        XCTAssertEqual(o[0], 0, accuracy: 1e-6)
+        XCTAssertEqual(o[1], 1, accuracy: 1e-6)
+        XCTAssertEqual(o[3], 0.75, accuracy: 1e-6)
+        XCTAssertEqual(a.overview(bins: 20).count, 20)
+    }
+
     func testUncoveredSpeech() {
         let ws = [Word(seg: 0, start: 1.0, end: 1.5, text: "好")]
         let gaps = Planner.uncoveredSpeech(words: ws, speech: [Span(0.5, 2.0)])

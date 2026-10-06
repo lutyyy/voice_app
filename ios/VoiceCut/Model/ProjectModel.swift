@@ -22,6 +22,12 @@ final class ProjectModel: ObservableObject {
     /// 標記結果（每個字一列；refine 補剪的列也寫回這裡）
     @Published private(set) var plan: [Word] = []
     @Published var notice: String?
+    /// 這次處理的步驟清單（畫面打勾用）
+    @Published private(set) var steps: [PipelineStep] = []
+    /// 辨識中即時出現的句子（最新的在最後）
+    @Published private(set) var liveLines: [String] = []
+    /// 聲波概覽（0～1），分析完音量後才有
+    @Published private(set) var waveform: [Float] = []
 
     private weak var store: ProjectStore?
     private var task: Task<Void, Never>?
@@ -72,6 +78,43 @@ final class ProjectModel: ObservableObject {
         progress = p.isNaN ? nil : p
     }
 
+    /// 預估剩餘時間（秒）：用目前步驟的進度與經過時間推算，太早或無法估計時為 nil
+    func eta(at now: Date) -> Double? {
+        guard let p = progress, p > 0.03, p < 1 else { return nil }
+        let elapsed = now.timeIntervalSince(stepStarted)
+        guard elapsed > 3 else { return nil }
+        return elapsed * (1 - p) / p
+    }
+
+    /// 開始一次處理前，列出會經過的步驟
+    private func setSteps(_ list: [(String, String)]) {
+        guard !isBusy else { return }
+        steps = list.map { PipelineStep(id: $0.0, title: $0.1) }
+        liveLines = []
+    }
+
+    /// 進入某個步驟：前面的步驟視為完成（有快取而跳過的也算）
+    private func enter(_ id: String) {
+        guard let i = steps.firstIndex(where: { $0.id == id }) else { return }
+        let now = Date()
+        for k in 0..<i where steps[k].state != .done {
+            steps[k].state = .done
+            steps[k].finished = now
+        }
+        if steps[i].state != .running {
+            steps[i].state = .running
+            steps[i].started = now
+        }
+    }
+
+    private func finishSteps() {
+        let now = Date()
+        for k in steps.indices where steps[k].state == .running {
+            steps[k].state = .done
+            steps[k].finished = now
+        }
+    }
+
     func cancel() {
         task?.cancel()
     }
@@ -84,6 +127,7 @@ final class ProjectModel: ObservableObject {
         task = Task {
             do {
                 try await work()
+                finishSteps()
                 stage = .ready
                 step = ""
                 progress = nil
@@ -121,6 +165,10 @@ final class ProjectModel: ObservableObject {
     }
 
     func prepare() {
+        var list = [("decode", "解碼音訊"), ("analyze", "分析音量與人聲"), ("model", "準備辨識模型"), ("asr", "語音辨識")]
+        if settings.gapFill { list.append(("gaps", "檢查漏字")) }
+        list.append(("plan", "標記要剪的地方"))
+        setSteps(list)
         run { [self] in
             try await ensureAnalysis()
             let a = analysis!
@@ -128,23 +176,28 @@ final class ProjectModel: ObservableObject {
             if let cached = try? load([Word].self, "words.json") {
                 words = cached
             } else {
+                enter("model")
                 say("轉成辨識用的格式…", 0)
                 let audio = try await MediaIO.decode16k(sourceURL) { p in Task { @MainActor in self.progress = p } }
                 let model = settings.model.isEmpty ? Transcriber.defaultModel : settings.model
                 try await Transcriber.shared.load(model: model) { p, s in
                     Task { @MainActor in self.report(p, s) }
                 }
+                enter("asr")
                 say("語音辨識中…", 0)
                 let prompt = settings.prompt.isEmpty ? Transcriber.defaultPrompt : settings.prompt + "，" + Transcriber.defaultPrompt
-                words = try await Transcriber.shared.transcribe(audio, prompt: prompt) { p in
+                words = try await Transcriber.shared.transcribe(audio, prompt: prompt, progress: { p in
                     Task { @MainActor in self.progress = p }
-                }
+                }, onText: { t in
+                    Task { @MainActor in self.addLive(t) }
+                })
                 log.append("辨識出 \(words.count) 個字")
                 if settings.gapFill {
                     words = try await fillGaps(words, audio: audio, speech: a.speech)
                 }
                 try save(words, "words.json")
             }
+            enter("plan")
             say("標記要剪的地方…")
             let input = words
             let p = await offMain { Planner.plan(input, speech: a.speech) }
@@ -173,14 +226,18 @@ final class ProjectModel: ObservableObject {
         let expect = Int(info.duration * Double(info.sampleRate)) * info.channels * 4
         let size = (try? FileManager.default.attributesOfItem(atPath: raw.path)[.size] as? Int) ?? 0
         if size == 0 || abs(size - expect) > info.sampleRate * info.channels * 4 {
+            enter("decode")
             say("解碼音訊…", 0)
             try await MediaIO.decodeToFile(sourceURL, to: raw, sampleRate: info.sampleRate, channels: info.channels) { p in
                 Task { @MainActor in self.progress = p }
             }
         }
         let src = try MappedPCM(url: raw, sampleRate: info.sampleRate, channels: info.channels)
+        enter("analyze")
         say("分析音量與人聲區間…")
-        analysis = await offMain { Analysis(src: src) }
+        let a = await offMain { Analysis(src: src) }
+        analysis = a
+        waveform = a.overview(bins: 160)
         pcm = src
     }
 
@@ -190,6 +247,7 @@ final class ProjectModel: ObservableObject {
         Planner.fitWords(&fitted, speech: speech, maxChar: 0, trimTo: 0)
         let gaps = Planner.uncoveredSpeech(words: fitted, speech: speech)
         if gaps.isEmpty { return words }
+        enter("gaps")
         say("第二輪：檢查漏字（\(gaps.count) 段）…", 0)
         var extra: [Word] = []
         for (k, g) in gaps.enumerated() {
@@ -219,7 +277,9 @@ final class ProjectModel: ObservableObject {
 
     func askClaude() {
         let key = settings.claudeKey
+        setSteps([("claude", "Claude 判斷重講的句子與贅詞")])
         run { [self] in
+            enter("claude")
             say("請 Claude 判斷重講的句子與贅詞…")
             let reply = try await ClaudeClient(apiKey: key).judge(sentencesText)
             try applyReply(reply)
@@ -270,18 +330,24 @@ final class ProjectModel: ObservableObject {
     // MARK: - 輸出
 
     func render() {
+        let rounds = settings.refineRounds
+        var list = [("decode", "解碼音訊"), ("analyze", "分析音量與人聲"), ("cut", "計算剪接點、停頓與呼吸聲"),
+                    ("audio", "輸出音訊")]
+        if meta.info?.isVideo == true { list.append(("video", "輸出影片")) }
+        if rounds > 0 { list += (1...rounds).map { ("refine\($0)", "第 \($0) 輪：重新辨識成品並補剪") } }
+        setSteps(list)
         run { [self] in
             try await ensureAnalysis()
-            var segs = try await renderOnce()
-            let rounds = settings.refineRounds
+            var segs = try await renderOnce(stepped: true)
             if rounds > 0 {
                 for rnd in 1...rounds {
                     try Task.checkCancellation()
+                    enter("refine\(rnd)")
                     say("第 \(rnd) 輪：重新辨識成品，找殘留語助詞…", 0)
                     let added = try await refineRound(rnd, segs: segs)
                     log.append("補剪 \(added) 處")
                     if added == 0 { break }
-                    segs = try await renderOnce()
+                    segs = try await renderOnce(stepped: false)
                 }
             }
             meta.outputStale = false
@@ -294,10 +360,11 @@ final class ProjectModel: ObservableObject {
     }
 
     /// 依目前的標記輸出一次，回傳輸出的片段
-    private func renderOnce() async throws -> [Seg] {
+    private func renderOnce(stepped: Bool) async throws -> [Seg] {
         guard let pcm, let a = analysis, let info = meta.info else { throw MediaError.readFailed("尚未分析") }
         let words = decided
         let o = settings.renderOptions
+        if stepped { enter("cut") }
         say("計算剪接點、停頓與呼吸聲…")
         let (segs, gain) = try await offMainThrowing { () throws -> ([Seg], [Float]) in
             let keep = words.filter { $0.action == .keep }
@@ -310,6 +377,7 @@ final class ProjectModel: ObservableObject {
         let wav = !video && settings.audioFormat == "wav"
         let outName = video ? "output.mp4" : (wav ? "output.wav" : "output.m4a")
         let audioURL = video ? url("output-audio.m4a") : url(outName)
+        if stepped { enter("audio") }
         say("輸出音訊（交叉淡化、壓低呼吸聲、補環境底噪）…")
         let seconds = try await offMainThrowing { () throws -> Double in
             let writer = try AudioFileWriter(url: audioURL, sampleRate: pcm.sampleRate, channels: pcm.channels,
@@ -317,6 +385,7 @@ final class ProjectModel: ObservableObject {
             return try Renderer.synthesize(pcm, segs: segs, analysis: a, gain: gain, options: o) { try writer.write($0) }
         }
         if video {
+            if stepped { enter("video") }
             say("輸出影片…", 0)
             try await VideoExporter.export(source: sourceURL, segs: segs, audio: audioURL, to: url(outName)) { p in
                 Task { @MainActor in self.progress = p }
@@ -345,9 +414,11 @@ final class ProjectModel: ObservableObject {
         }
         say("第 \(rnd) 輪：重新辨識成品…", 0)
         let prompt = settings.prompt.isEmpty ? Transcriber.defaultPrompt : settings.prompt + "，" + Transcriber.defaultPrompt
-        var words = try await Transcriber.shared.transcribe(audio, prompt: prompt) { p in
+        var words = try await Transcriber.shared.transcribe(audio, prompt: prompt, progress: { p in
             Task { @MainActor in self.progress = p }
-        }
+        }, onText: { t in
+            Task { @MainActor in self.addLive(t) }
+        })
         let speechOut = await offMain { Analysis(src: ArrayPCM(samples: audio, sampleRate: 16000)).speech }
         if settings.gapFill {
             words = try await fillGaps(words, audio: audio, speech: speechOut)
@@ -361,6 +432,12 @@ final class ProjectModel: ObservableObject {
             try save(raw, "plan.json")
         }
         return added
+    }
+
+    private func addLive(_ t: String) {
+        if liveLines.contains(t) { return }
+        liveLines.append(t)
+        if liveLines.count > 6 { liveLines.removeFirst(liveLines.count - 6) }
     }
 
     static func clock(_ t: Double) -> String {
@@ -377,4 +454,14 @@ func offMainThrowing<T>(_ work: @escaping () throws -> T) async throws -> T {
 
 func offMain<T>(_ work: @escaping () -> T) async -> T {
     await Task.detached(priority: .userInitiated) { work() }.value
+}
+
+/// 處理流程中的一個步驟
+struct PipelineStep: Identifiable, Equatable {
+    enum State { case pending, running, done }
+    let id: String
+    let title: String
+    var state: State = .pending
+    var started: Date?
+    var finished: Date?
 }
