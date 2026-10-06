@@ -54,19 +54,36 @@ final class ProjectStore: ObservableObject {
         return m
     }
 
-    /// 匯入檔案：複製到專案資料夾（原檔不動）
-    func create(from url: URL, move: Bool = false) throws -> ProjectMeta {
+    /// 匯入檔案：複製到專案資料夾（原檔不動）。
+    /// 在背景複製，並透過 NSFileCoordinator 讀取：Google 雲端硬碟、iCloud 等雲端檔案會先下載到手機
+    func create(from url: URL, move: Bool = false) async throws -> ProjectMeta {
         let id = UUID()
         let dir = Self.folder(id)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let ext = url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased()
         let dst = dir.appendingPathComponent("source." + ext)
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        if move {
-            try FileManager.default.moveItem(at: url, to: dst)
-        } else {
-            try FileManager.default.copyItem(at: url, to: dst)
+        try await offMainThrowing {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                if move {
+                    try FileManager.default.moveItem(at: url, to: dst)
+                } else {
+                    var coordError: NSError?
+                    var copyError: Error?
+                    NSFileCoordinator().coordinate(readingItemAt: url, options: .withoutChanges, error: &coordError) { readURL in
+                        do {
+                            try FileManager.default.copyItem(at: readURL, to: dst)
+                        } catch {
+                            copyError = error
+                        }
+                    }
+                    if let e = (coordError as Error?) ?? copyError { throw e }
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: dir)
+                throw error
+            }
         }
         let meta = ProjectMeta(id: id, name: url.lastPathComponent, sourceName: dst.lastPathComponent, created: Date())
         try save(meta)

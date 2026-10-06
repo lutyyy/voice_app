@@ -31,7 +31,7 @@ struct HomeView: View {
                 if importing {
                     HStack {
                         ProgressView()
-                        Text("匯入中…").foregroundStyle(.secondary)
+                        Text("匯入中…（雲端檔案會先下載）").foregroundStyle(.secondary)
                     }
                 }
 
@@ -78,7 +78,7 @@ struct HomeView: View {
                     }
                     do {
                         guard let movie = try await item.loadTransferable(type: PickedMovie.self) else { return }
-                        let meta = try store.create(from: movie.url, move: true)
+                        let meta = try await store.create(from: movie.url, move: true)
                         path = [meta.id]
                     } catch {
                         self.error = error.localizedDescription
@@ -106,11 +106,15 @@ struct HomeView: View {
     }
 
     private func importFile(_ url: URL) {
-        do {
-            let meta = try store.create(from: url)
-            path = [meta.id]
-        } catch {
-            self.error = error.localizedDescription
+        importing = true
+        Task {
+            defer { importing = false }
+            do {
+                let meta = try await store.create(from: url)
+                path = [meta.id]
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }
