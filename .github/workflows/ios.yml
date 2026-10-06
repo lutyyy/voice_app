@@ -51,6 +51,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             | tee build.log | grep -E "error:|warning: .*VoiceCut|BUILD (SUCCEEDED|FAILED)" || true
           test -d build/Build/Products/Release-iphoneos/VoiceCut.app
+      - name: 檢查 App 名稱（SideStore 只接受英文的 App ID 名稱）
+        working-directory: ios
+        run: |
+          APP=build/Build/Products/Release-iphoneos/VoiceCut.app
+          NAME=$(plutil -extract CFBundleDisplayName raw "$APP/Info.plist")
+          echo "CFBundleDisplayName=$NAME"
+          echo "$NAME" | LC_ALL=C grep -qE '^[A-Za-z0-9 ]+$'
+          find "$APP" -name InfoPlist.strings
+          test -f "$APP/zh-Hant.lproj/InfoPlist.strings"
       - name: 打包 IPA
         working-directory: ios
         run: |

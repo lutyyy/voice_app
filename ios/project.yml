@@ -42,7 +42,10 @@ targets:
     info:
       path: VoiceCut/Info.plist
       properties:
-        CFBundleDisplayName: 語音剪輯
+        # Apple 的 App ID 名稱只接受英文與數字（SideStore 等工具會用它建立 App ID），
+        # 中文名稱放在 zh-Hant.lproj/InfoPlist.strings，桌面上仍顯示「語音剪輯」
+        CFBundleDisplayName: VoiceCut
+        CFBundleName: VoiceCut
         CFBundleDevelopmentRegion: zh-Hant
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
