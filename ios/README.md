@@ -25,7 +25,7 @@
 | 設定 | 選項 |
 |---|---|
 | 剪輯風格 | 自然（停頓留多、最自然）、標準（與電腦版相同）、精簡（剪到最短）；套用後可再微調全部參數 |
-| 處理速度 | 快速（Base 模型）、標準（Small＋漏字補抓＋補剪 1 輪）、極致（Large v3 Turbo＋補剪 2 輪）。這支手機跑不動的等級會標 ⚠︎ 並在選擇時警告 |
+| 處理速度 | 都用 Large v3 Turbo：快速（只辨識一次）、標準（＋漏字補抓＋補剪 1 輪）、極致（＋補剪 2 輪）。跑不動 Turbo 的舊手機改用 Tiny，並在選擇時警告 |
 
 ## 用 SideStore 安裝與自動更新（建議）
 
@@ -56,7 +56,7 @@ iOS App 必須用 Mac 上的 Xcode 編譯。這個專案改用 GitHub 的雲端 
 
 | 項目 | 電腦版（autocut.py） | iOS 版 |
 |---|---|---|
-| 語音辨識 | faster-whisper large-v3（顯示卡） | WhisperKit：依裝置自動選 Large v3 Turbo／Small／Base |
+| 語音辨識 | faster-whisper large-v3（顯示卡） | WhisperKit：Large v3 Turbo（舊手機用 Tiny）。Base／Small 實測辨識不出字，不提供 |
 | 字的時間校正 | torchaudio MMS_FA 強制對齊 | 沒有（沿用 Whisper 的時間，再用人聲區間校正） |
 | 被聽成正常字的語助詞（第三輪） | 有 | 沒有（需要強制對齊） |
 | 人聲偵測 | Silero VAD | 依音量判斷 |

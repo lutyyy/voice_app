@@ -15,12 +15,18 @@ final class Transcriber: ObservableObject {
         let note: String
     }
 
-    /// 介面上可選的模型（由小到大）
+    static let tiny = "openai_whisper-tiny"
+    static let turbo = "openai_whisper-large-v3-v20240930_626MB"
+
+    /// 介面上可選的模型（由小到大）。
+    /// Base、Small 在實測（CI 上用合成中文語音，WhisperKit 1.1.0）中一個字都辨識不出來，所以不提供
     static let candidates: [ModelChoice] = [
-        ModelChoice(id: "openai_whisper-base", name: "Base", note: "最快、約 140MB，中文準確度較低"),
-        ModelChoice(id: "openai_whisper-small", name: "Small", note: "約 480MB，速度與準確度平衡"),
-        ModelChoice(id: "openai_whisper-large-v3-v20240930_626MB", name: "Large v3 Turbo", note: "約 630MB，最準（建議 iPhone 14 以上）"),
+        ModelChoice(id: tiny, name: "Tiny", note: "約 70MB，很快但錯字多，只建議跑不動 Large v3 Turbo 的舊手機使用"),
+        ModelChoice(id: turbo, name: "Large v3 Turbo", note: "約 630MB，準確，會寫出「嗯、呃」（建議 iPhone 12 以上）"),
     ]
+
+    /// 已知辨識不出字的模型（舊版設定可能還存著）
+    static let broken: Set<String> = ["openai_whisper-base", "openai_whisper-small"]
 
     /// 這台裝置支援的模型
     static var supported: [String] {
@@ -28,11 +34,9 @@ final class Transcriber: ObservableObject {
         return candidates.map(\.id).filter { s.contains($0) }
     }
 
-    /// 沒有指定時：能跑 Large v3 Turbo 就用它，否則 Small，再不行用 Base
+    /// 沒有指定時：能跑 Large v3 Turbo 就用它，否則 Tiny
     static var defaultModel: String {
-        let s = supported
-        for id in candidates.map(\.id).reversed() where s.contains(id) { return id }
-        return "openai_whisper-base"
+        supported.contains(turbo) ? turbo : tiny
     }
 
     private var pipe: WhisperKit?
@@ -221,13 +225,9 @@ enum SpeedTier: String, CaseIterable, Identifiable {
         }
     }
 
-    var model: String {
-        switch self {
-        case .fast: return "openai_whisper-base"
-        case .standard: return "openai_whisper-small"
-        case .ultimate: return "openai_whisper-large-v3-v20240930_626MB"
-        }
-    }
+    /// 三個等級用同一個模型（這支手機能跑的最好的），差別在補抓與補剪
+    @MainActor
+    var model: String { Transcriber.defaultModel }
 
     var gapFill: Bool { self != .fast }
     var refineRounds: Int {
@@ -240,18 +240,17 @@ enum SpeedTier: String, CaseIterable, Identifiable {
 
     var note: String {
         switch self {
-        case .fast: return "Base 模型、不補抓不補剪。最快，但較容易漏掉語助詞，適合先試剪"
-        case .standard: return "Small 模型＋漏字補抓＋補剪 1 輪。速度與品質平衡"
-        case .ultimate: return "Large v3 Turbo 模型＋漏字補抓＋補剪 2 輪。最乾淨，處理時間約是標準的 2～3 倍"
+        case .fast: return "只辨識一次、不補抓不補剪。最快，適合先試剪"
+        case .standard: return "加上漏字補抓＋補剪 1 輪。速度與品質平衡"
+        case .ultimate: return "漏字補抓＋補剪 2 輪。最乾淨，處理時間約是標準的 1.5～2 倍"
         }
     }
 
     /// 這支手機跑這個等級的風險；沒問題時為 nil
     @MainActor
     var warning: String? {
-        let modelName = Transcriber.candidates.first { $0.id == model }?.name ?? model
-        if !Transcriber.supported.contains(model) {
-            return "這支 iPhone 的晶片不建議跑 \(modelName) 模型：可能非常慢、發燙，或因記憶體不足而閃退。建議改用「\(SpeedTier.recommended.name)」。"
+        if model == Transcriber.tiny {
+            return "這支 iPhone 跑不動 Large v3 Turbo，會改用 Tiny 模型：速度快，但錯字較多。"
         }
         let gb = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
         if self == .ultimate && gb < 5 {
@@ -263,7 +262,7 @@ enum SpeedTier: String, CaseIterable, Identifiable {
     /// 這支手機能順跑的最高等級
     @MainActor
     static var recommended: SpeedTier {
-        allCases.last { Transcriber.supported.contains($0.model) } ?? .fast
+        .standard
     }
 }
 

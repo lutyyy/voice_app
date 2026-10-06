@@ -53,7 +53,9 @@ final class AppSettings: ObservableObject {
 
     /// 實際使用的辨識模型
     @MainActor
-    var resolvedModel: String { model.isEmpty ? Transcriber.defaultModel : model }
+    var resolvedModel: String {
+        model.isEmpty || Transcriber.broken.contains(model) ? Transcriber.defaultModel : model
+    }
 
     /// 目前的模型／補抓／補剪組合屬於哪個速度等級；自訂時為 nil
     @MainActor
@@ -61,6 +63,7 @@ final class AppSettings: ObservableObject {
         SpeedTier.allCases.first { $0.model == resolvedModel && $0.gapFill == gapFill && $0.refineRounds == refineRounds }
     }
 
+    @MainActor
     func apply(_ t: SpeedTier) {
         model = t.model
         gapFill = t.gapFill

@@ -10,6 +10,10 @@ struct VoiceCutApp: App {
             HomeView()
                 .environmentObject(store)
                 .environmentObject(settings)
+                .onAppear {
+                    // 舊版可能選了辨識不出字的 Base／Small：改回自動
+                    if Transcriber.broken.contains(settings.model) { settings.model = "" }
+                }
         }
     }
 }

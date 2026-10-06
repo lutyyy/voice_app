@@ -84,6 +84,12 @@ if words.isEmpty || CommandLine.arguments.contains("--diag") {
     }
 }
 if words.isEmpty { fail("辨識出 0 個字") }
+let joined = words.map(\.text).joined()
+if model.contains("large"), range == nil {
+    // Turbo 應該輸出繁體、抓到語助詞
+    for k in ["數位轉型", "產品"] where !joined.contains(k) { fail("逐字稿缺少「\(k)」") }
+    if !joined.contains("嗯") && !joined.contains("呃") { fail("沒有抓到語助詞") }
+}
 if let l = words.last, l.end > info.duration + 1 { fail("字的時間超出範圍長度") }
 
 let plan = Planner.plan(words, speech: analysis.speech, options: PlanOptions())
