@@ -46,6 +46,7 @@ enum MediaIO {
         // mp3 等格式預設只估算長度，要求精確計算
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let duration = try await asset.load(.duration).seconds
+        guard duration.isFinite, duration > 0 else { throw MediaError.readFailed("無法讀取檔案長度") }
         guard let audio = try await asset.loadTracks(withMediaType: .audio).first else { throw MediaError.noAudio }
         var sr = 44100, ch = 1
         if let fd = try await audio.load(.formatDescriptions).first,
@@ -124,7 +125,9 @@ enum MediaIO {
 
     /// 選範圍畫面用的整檔聲波：低取樣率解碼，每段取 RMS（dB），換算成 0～1。不保留樣本，長檔也不吃記憶體
     static func peaks(_ url: URL, duration: Double, bins: Int, progress: ((Double) -> Void)? = nil) async throws -> [Float] {
-        let sr = 4000
+        // 4kHz 等過低的取樣率可能讓 AVAssetReader 丟出無法 catch 的例外而閃退；用常見的 8kHz
+        let sr = 8000
+        guard duration.isFinite, duration > 0, bins > 0 else { return [] }
         let per = max(1, Int(duration * Double(sr)) / bins)
         var db = [Float]()
         db.reserveCapacity(bins + 1)
