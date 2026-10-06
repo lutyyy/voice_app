@@ -78,7 +78,7 @@ struct ProjectView: View {
                 .foregroundStyle(.orange)
             Button("變更處理範圍", systemImage: "timeline.selection") { showRange = true }
             Button("換成較準的速度重新辨識", systemImage: "arrow.clockwise") {
-                if settings.speed == .fast { settings.apply(.standard) }
+                if settings.speed == .fast { settings.apply(SpeedTier.standard) }
                 model.retranscribe()
             }
         } footer: {

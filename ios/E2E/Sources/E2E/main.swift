@@ -1,5 +1,6 @@
 import AutoCutCore
 import Foundation
+import WhisperKit
 
 // 用法：E2E <音檔> <模型> [開始秒 結束秒]
 let args = CommandLine.arguments
@@ -42,6 +43,34 @@ let words = try await Transcriber.shared.transcribe(audio, prompt: Transcriber.d
 print("words:", words.count)
 print("text:", words.map(\.text).joined())
 if let f = words.first, let l = words.last { print("time \(f.start) – \(l.end)") }
+if words.isEmpty || CommandLine.arguments.contains("--diag") {
+    // 診斷：同樣的音訊用不同解碼選項跑，找出是哪個選項讓結果變空
+    let folder = try await WhisperKit.download(variant: model)
+    let pipe = try await WhisperKit(WhisperKitConfig(model: model, modelFolder: folder.path, verbose: false, logLevel: .error,
+                                                     prewarm: false, load: true, download: false))
+    let tok = pipe.tokenizer!
+    let prompt = tok.encode(text: " " + Transcriber.defaultPrompt).filter { $0 < tok.specialTokens.specialTokenBegin }
+    let variants: [(String, DecodingOptions)] = [
+        ("app", DecodingOptions(task: .transcribe, language: "zh", temperature: 0, usePrefillPrompt: true, skipSpecialTokens: true,
+                                wordTimestamps: true, promptTokens: prompt, chunkingStrategy: .vad)),
+        ("app,no-thresholds", DecodingOptions(task: .transcribe, language: "zh", temperature: 0, usePrefillPrompt: true,
+                                skipSpecialTokens: true, wordTimestamps: true, promptTokens: prompt,
+                                compressionRatioThreshold: nil, logProbThreshold: nil, firstTokenLogProbThreshold: nil,
+                                noSpeechThreshold: nil, chunkingStrategy: .vad)),
+        ("no-prompt", DecodingOptions(task: .transcribe, language: "zh", temperature: 0, usePrefillPrompt: true,
+                                skipSpecialTokens: true, wordTimestamps: true, chunkingStrategy: .vad)),
+        ("no-prompt,no-words", DecodingOptions(task: .transcribe, language: "zh", temperature: 0, usePrefillPrompt: true,
+                                skipSpecialTokens: true, chunkingStrategy: .vad)),
+        ("plain", DecodingOptions()),
+    ]
+    for (name, o) in variants {
+        let r = try await pipe.transcribe(audioArray: audio, decodeOptions: o)
+        let segs = r.flatMap(\.segments)
+        let nw = segs.reduce(0) { $0 + ($1.words?.count ?? 0) }
+        print("[\(name)] segments \(segs.count), words \(nw), text: \(segs.map(\.text).joined().prefix(200))")
+        for sg in segs.prefix(3) { print("   seg \(sg.start)-\(sg.end) noSpeech \(sg.noSpeechProb) avgLogprob \(sg.avgLogprob) tokens \(sg.tokens.count)") }
+    }
+}
 if words.isEmpty { fail("辨識出 0 個字") }
 if let l = words.last, l.end > info.duration + 1 { fail("字的時間超出範圍長度") }
 
