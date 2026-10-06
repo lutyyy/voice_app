@@ -15,6 +15,16 @@
 5. 按「輸出剪好的檔案」。完成後可以直接播放，或按「分享／儲存剪好的檔案」存到「檔案」、「照片」或傳給別人。
    剪好的檔案也能在「檔案」App 的「我的 iPhone › 語音剪輯」找到。
 
+## 用 SideStore 安裝與自動更新（建議）
+
+在 SideStore 的「Sources」按「＋」，輸入以下網址加入來源：
+
+```
+https://github.com/lutyyy/voice_app/releases/latest/download/source.json
+```
+
+之後在「Browse」找到「語音剪輯」安裝。每次程式更新、雲端編譯成功後會自動發布新版本（版本號 1.0.編譯次數），SideStore 的「My Apps」會出現「Update」，按一下就更新，專案資料會保留。
+
 ## 安裝到 iPhone（沒有 Mac 也可以）
 
 iOS App 必須用 Mac 上的 Xcode 編譯。這個專案改用 GitHub 的雲端 Mac 自動編譯：
