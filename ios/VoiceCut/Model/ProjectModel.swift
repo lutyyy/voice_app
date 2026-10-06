@@ -164,6 +164,10 @@ final class ProjectModel: ObservableObject {
             meta.info = try await MediaIO.info(sourceURL)
             saveMeta()
         }
+        if let sr = meta.info?.sampleRate, MediaInfo.workingRate(sr) != sr {
+            meta.info?.sampleRate = MediaInfo.workingRate(sr)  // 舊版建立的專案：改用 44.1kHz 重新解碼
+            saveMeta()
+        }
         let info = meta.info!
         let raw = url("pcm.f32")
         let expect = Int(info.duration * Double(info.sampleRate)) * info.channels * 4

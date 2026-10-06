@@ -10,6 +10,10 @@ struct MediaInfo: Codable, Equatable {
     var sampleRate: Int
     var channels: Int
     var isVideo: Bool { fps != nil }
+
+    /// 處理與輸出用的取樣率：48kHz 維持原樣，其餘一律 44.1kHz（與電腦版預設相同）。
+    /// 低取樣率（例如 16kHz 錄音）直接輸出 AAC 會被編碼器拒絕（錯誤 '!dat'）
+    static func workingRate(_ sr: Int) -> Int { sr == 48000 ? 48000 : 44100 }
 }
 
 enum MediaError: LocalizedError {
@@ -43,7 +47,7 @@ enum MediaIO {
             fps = f > 0 ? f : 30
         }
         // AAC 編碼最高 48kHz；超過的話解碼時就降下來
-        return MediaInfo(duration: duration, fps: fps, sampleRate: min(max(sr, 8000), 48000), channels: min(max(ch, 1), 2))
+        return MediaInfo(duration: duration, fps: fps, sampleRate: MediaInfo.workingRate(sr), channels: min(max(ch, 1), 2))
     }
 
     /// 解碼成 Float32 交錯排列（AVAssetReader 會順便重新取樣與混音），逐段交給 sink
@@ -126,7 +130,15 @@ final class AudioFileWriter {
             AVNumberOfChannelsKey: channels,
             AVEncoderBitRateKey: bitRate,
         ]
-        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        do {
+            file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        } catch where !wav {
+            // 編碼器不接受指定的位元率時，改用預設位元率
+            var fallback = settings
+            fallback.removeValue(forKey: AVEncoderBitRateKey)
+            try? FileManager.default.removeItem(at: url)
+            file = try AVAudioFile(forWriting: url, settings: fallback, commonFormat: .pcmFormatFloat32, interleaved: false)
+        }
         format = file.processingFormat
         self.channels = channels
     }
