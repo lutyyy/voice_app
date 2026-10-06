@@ -245,7 +245,9 @@ public enum Renderer {
             let snap = { (t: Double) in (t * fps).rounded(.toNearestOrEven) / fps }
             pieces = pieces.map { Piece(start: snap($0.start), end: snap($0.end)) }.filter { $0.end > $0.start }
         }
-        pieces = pieces.map { Piece(start: max(0, $0.start), end: min(duration, $0.end), fill: $0.fill) }
+        // 結尾不超過檔案長度；影片要往下取到完整的影格，避免最後一格只有一半
+        let maxEnd = fps.map { ($0 > 0 ? (duration * $0 + 1e-9).rounded(.down) / $0 : duration) } ?? duration
+        pieces = pieces.map { Piece(start: max(0, $0.start), end: min(maxEnd, $0.end), fill: $0.fill) }
             .filter { $0.end - $0.start > 0.01 }
         if pieces.isEmpty { throw RenderError.nothingKept }
         var segs: [Seg] = []

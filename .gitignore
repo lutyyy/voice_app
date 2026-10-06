@@ -5,3 +5,7 @@ ios/*.xcodeproj/
 ios/build/
 xcuserdata/
 DerivedData/
+ios/VoiceCut/Info.plist
+ios/Payload/
+ios/*.ipa
+ios/build.log

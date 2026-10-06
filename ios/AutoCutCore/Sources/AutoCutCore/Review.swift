@@ -127,9 +127,9 @@ public enum Review {
         return d
     }
 
-    /// 有刪除清單時，沒被列出的 review 一律保留
+    /// 有刪除清單時，沒被列出的 review 一律保留。使用者手動改過的字（reason 以「手動」開頭）不動
     public static func apply(_ d: Deletes, to words: inout [Word]) {
-        for i in words.indices {
+        for i in words.indices where !words[i].reason.hasPrefix("手動") {
             if d.sentences.contains(words[i].seg) {
                 words[i].mark(.cut, "AI標記刪句")
             } else if words[i].action == .review {
