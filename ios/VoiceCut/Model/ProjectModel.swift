@@ -151,7 +151,25 @@ final class ProjectModel: ObservableObject {
 
     /// 開啟專案時呼叫：還沒有標記結果就從頭處理
     func prepareIfNeeded() {
-        if plan.isEmpty && stage == .idle { prepare() }
+        if plan.isEmpty && stage == .idle && !needsRange { prepare() }
+    }
+
+    /// 新匯入的檔案要先選範圍
+    var needsRange: Bool { meta.rangeChosen == false }
+
+    /// 選好範圍（nil = 整個檔案）：之前的辨識結果都作廢，從頭處理
+    func setRange(_ r: ClipRange?, fps: Double?) {
+        guard !isBusy else { return }
+        var r = r
+        if var x = r, let fps, fps > 0 {  // 影片：開頭對齊影格，畫面才不會差一格
+            x.start = (x.start * fps).rounded(.down) / fps
+            r = x
+        }
+        let changed = r != meta.range
+        meta.range = r
+        meta.rangeChosen = true
+        saveMeta()
+        if changed || plan.isEmpty { retranscribe() }
     }
 
     /// 重新辨識（刪除逐字稿與標記，從頭來）
@@ -161,7 +179,10 @@ final class ProjectModel: ObservableObject {
         meta.info = nil
         analysis = nil
         pcm = nil
+        waveform = []
+        estimate = nil
         meta.deletes = nil
+        meta.planOptions = nil
         meta.outputStale = true
         saveMeta()
         stage = .idle
@@ -182,7 +203,9 @@ final class ProjectModel: ObservableObject {
             } else {
                 enter("model")
                 say("轉成辨識用的格式…", 0)
-                let audio = try await MediaIO.decode16k(sourceURL) { p in Task { @MainActor in self.progress = p } }
+                let audio = try await MediaIO.decode16k(sourceURL, range: meta.range) { p in
+                    Task { @MainActor in self.progress = p }
+                }
                 let model = settings.resolvedModel
                 try await Transcriber.shared.load(model: model) { p, s in
                     Task { @MainActor in self.report(p, s) }
@@ -311,7 +334,9 @@ final class ProjectModel: ObservableObject {
     private func ensureAnalysis() async throws {
         if analysis != nil, pcm != nil { return }
         if meta.info == nil {
-            meta.info = try await MediaIO.info(sourceURL)
+            var info = try await MediaIO.info(sourceURL)
+            if let r = meta.range { info.duration = min(info.duration, r.end) - r.start }
+            meta.info = info
             saveMeta()
         }
         if let sr = meta.info?.sampleRate, MediaInfo.workingRate(sr) != sr {
@@ -325,7 +350,8 @@ final class ProjectModel: ObservableObject {
         if size == 0 || abs(size - expect) > info.sampleRate * info.channels * 4 {
             enter("decode")
             say("解碼音訊…", 0)
-            try await MediaIO.decodeToFile(sourceURL, to: raw, sampleRate: info.sampleRate, channels: info.channels) { p in
+            try await MediaIO.decodeToFile(sourceURL, to: raw, sampleRate: info.sampleRate, channels: info.channels,
+                                           range: meta.range) { p in
                 Task { @MainActor in self.progress = p }
             }
         }
@@ -494,7 +520,8 @@ final class ProjectModel: ObservableObject {
         if video {
             if stepped { enter("video") }
             say("輸出影片…", 0)
-            try await VideoExporter.export(source: sourceURL, segs: segs, audio: audioURL, to: url(outName)) { p in
+            try await VideoExporter.export(source: sourceURL, segs: segs, audio: audioURL, to: url(outName),
+                                           offset: meta.range?.start ?? 0) { p in
                 Task { @MainActor in self.progress = p }
             }
             try? FileManager.default.removeItem(at: audioURL)

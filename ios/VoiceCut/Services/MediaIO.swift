@@ -16,6 +16,18 @@ struct MediaInfo: Codable, Equatable {
     static func workingRate(_ sr: Int) -> Int { sr == 48000 ? 48000 : 44100 }
 }
 
+/// 只處理原檔的一段（秒）
+struct ClipRange: Codable, Equatable {
+    var start: Double
+    var end: Double
+    var length: Double { end - start }
+
+    var cmRange: CMTimeRange {
+        CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 90000),
+                    end: CMTime(seconds: end, preferredTimescale: 90000))
+    }
+}
+
 enum MediaError: LocalizedError {
     case noAudio
     case readFailed(String)
@@ -51,13 +63,15 @@ enum MediaIO {
     }
 
     /// 解碼成 Float32 交錯排列（AVAssetReader 會順便重新取樣與混音），逐段交給 sink
-    static func decode(_ url: URL, sampleRate: Int, channels: Int,
+    static func decode(_ url: URL, sampleRate: Int, channels: Int, range: ClipRange? = nil,
                        progress: ((Double) -> Void)? = nil, sink: (UnsafeBufferPointer<Float>) throws -> Void) async throws {
         let asset = AVURLAsset(url: url)
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         if tracks.isEmpty { throw MediaError.noAudio }
-        let duration = try await asset.load(.duration).seconds
+        var duration = try await asset.load(.duration).seconds
+        if let range { duration = range.length }
         let reader = try AVAssetReader(asset: asset)
+        if let range { reader.timeRange = range.cmRange }
         let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVLinearPCMBitDepthKey: 32,
@@ -91,21 +105,45 @@ enum MediaIO {
     }
 
     /// 解碼成原始 Float32 檔（之後以記憶體映射讀取，長檔也不吃記憶體）
-    static func decodeToFile(_ url: URL, to raw: URL, sampleRate: Int, channels: Int,
+    static func decodeToFile(_ url: URL, to raw: URL, sampleRate: Int, channels: Int, range: ClipRange? = nil,
                              progress: ((Double) -> Void)? = nil) async throws {
         FileManager.default.createFile(atPath: raw.path, contents: nil)
         let fh = try FileHandle(forWritingTo: raw)
         defer { try? fh.close() }
-        try await decode(url, sampleRate: sampleRate, channels: channels, progress: progress) { buf in
+        try await decode(url, sampleRate: sampleRate, channels: channels, range: range, progress: progress) { buf in
             try fh.write(contentsOf: Data(buffer: buf))
         }
     }
 
     /// 解碼成 16kHz 單聲道（Whisper 的輸入格式）
-    static func decode16k(_ url: URL, progress: ((Double) -> Void)? = nil) async throws -> [Float] {
+    static func decode16k(_ url: URL, range: ClipRange? = nil, progress: ((Double) -> Void)? = nil) async throws -> [Float] {
         var out = [Float]()
-        try await decode(url, sampleRate: 16000, channels: 1, progress: progress) { out.append(contentsOf: $0) }
+        try await decode(url, sampleRate: 16000, channels: 1, range: range, progress: progress) { out.append(contentsOf: $0) }
         return out
+    }
+
+    /// 選範圍畫面用的整檔聲波：低取樣率解碼，每段取 RMS（dB），換算成 0～1。不保留樣本，長檔也不吃記憶體
+    static func peaks(_ url: URL, duration: Double, bins: Int, progress: ((Double) -> Void)? = nil) async throws -> [Float] {
+        let sr = 4000
+        let per = max(1, Int(duration * Double(sr)) / bins)
+        var db = [Float]()
+        db.reserveCapacity(bins + 1)
+        var acc: Float = 0, n = 0
+        try await decode(url, sampleRate: sr, channels: 1, progress: progress) { buf in
+            for x in buf {
+                acc += x * x
+                n += 1
+                if n == per {
+                    db.append(10 * log10(acc / Float(n) + 1e-10))
+                    acc = 0
+                    n = 0
+                }
+            }
+        }
+        if n > 0 { db.append(10 * log10(acc / Float(n) + 1e-10)) }
+        guard let hi = db.max() else { return [] }
+        let lo = max(db.sorted()[db.count / 20], hi - 60)
+        return db.map { min(1, max(0, ($0 - lo) / max(1, hi - lo))) }
     }
 }
 
@@ -159,7 +197,8 @@ final class AudioFileWriter {
 
 enum VideoExporter {
     /// 依片段剪接影片畫面，配上已經剪好的音訊，輸出 mp4
-    static func export(source: URL, segs: [Seg], audio: URL, to out: URL,
+    /// offset：只處理原檔的一段時，片段時間要加上該段的開頭
+    static func export(source: URL, segs: [Seg], audio: URL, to out: URL, offset: Double = 0,
                        progress: ((Double) -> Void)? = nil) async throws {
         let asset = AVURLAsset(url: source)
         guard let vt = try await asset.loadTracks(withMediaType: .video).first else { throw MediaError.exportFailed("找不到影像") }
@@ -172,8 +211,8 @@ enum VideoExporter {
         let ts: CMTimeScale = 90000
         var cursor = CMTime.zero
         for s in segs where s.kind == .src {
-            let range = CMTimeRange(start: CMTime(seconds: s.start, preferredTimescale: ts),
-                                    end: CMTime(seconds: s.end, preferredTimescale: ts))
+            let range = CMTimeRange(start: CMTime(seconds: s.start + offset, preferredTimescale: ts),
+                                    end: CMTime(seconds: s.end + offset, preferredTimescale: ts))
             try cv.insertTimeRange(range, of: vt, at: cursor)
             cursor = cursor + range.duration
         }

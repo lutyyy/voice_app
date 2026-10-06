@@ -19,6 +19,10 @@ struct ProjectMeta: Codable, Identifiable, Equatable {
     var deletes: String?
     /// 產生目前標記時用的拖音參數（nil = 舊版預設）；設定改了就重新標記
     var planOptions: PlanOptions?
+    /// 只處理原檔的這一段；nil = 整個檔案
+    var range: ClipRange?
+    /// false = 新匯入、還沒選範圍（舊專案沒有這個欄位，視為已選）
+    var rangeChosen: Bool?
 
     var displayName: String { (name as NSString).deletingPathExtension }
 }
@@ -87,7 +91,8 @@ final class ProjectStore: ObservableObject {
                 throw error
             }
         }
-        let meta = ProjectMeta(id: id, name: url.lastPathComponent, sourceName: dst.lastPathComponent, created: Date())
+        var meta = ProjectMeta(id: id, name: url.lastPathComponent, sourceName: dst.lastPathComponent, created: Date())
+        meta.rangeChosen = false
         try save(meta)
         reload()
         return meta

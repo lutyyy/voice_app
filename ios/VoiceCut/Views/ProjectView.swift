@@ -9,6 +9,7 @@ struct ProjectView: View {
     @EnvironmentObject private var settings: AppSettings
     @State private var showSettings = false
     @State private var copied = false
+    @State private var showRange = false
 
     var body: some View {
         List {
@@ -40,6 +41,8 @@ struct ProjectView: View {
                 Menu {
                     Button("重新辨識", systemImage: "arrow.clockwise") { model.retranscribe() }
                         .disabled(model.isBusy)
+                    Button("變更處理範圍", systemImage: "timeline.selection") { showRange = true }
+                        .disabled(model.isBusy)
                     Button("設定", systemImage: "gearshape") { showSettings = true }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -47,12 +50,18 @@ struct ProjectView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showRange) {
+            RangeSelectView(url: model.sourceURL, initial: model.meta.range, firstTime: model.needsRange) { r, fps in
+                model.setRange(r, fps: fps)
+            }
+        }
         .alert("提示", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
             Button("好") {}
         } message: {
             Text(model.notice ?? "")
         }
         .onAppear {
+            if model.needsRange { showRange = true }
             model.prepareIfNeeded()
             model.warmUp()
         }
@@ -62,8 +71,11 @@ struct ProjectView: View {
 
     private var header: some View {
         Section {
+            if let r = model.meta.range {
+                LabeledContent("處理範圍", value: "\(RangeSelectView.fine(r.start)) – \(RangeSelectView.fine(r.end))")
+            }
             if let info = model.meta.info {
-                LabeledContent("長度", value: ProjectModel.clock(info.duration))
+                LabeledContent(model.meta.range == nil ? "長度" : "範圍長度", value: ProjectModel.clock(info.duration))
                 LabeledContent("類型", value: info.isVideo ? "影片" : "音訊")
             }
             LabeledContent("檔名", value: model.meta.name)
