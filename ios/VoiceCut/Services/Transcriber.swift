@@ -195,7 +195,12 @@ final class Transcriber: ObservableObject {
             if added { si += 1 }
         }
         // 超出音訊長度的字是模型幻覺（實測有提示詞時會在結尾補出提示詞）
-        return words.filter { $0.start < total }
+        // 結尾的字時間可能比檔案長（實測 Tiny 會），夾回檔案長度內
+        return words.filter { $0.start < total }.map { w in
+            var w = w
+            w.end = min(w.end, r3(total))
+            return w
+        }
     }
 
     /// 簡體轉繁體（Whisper 指定中文時常輸出簡體）
