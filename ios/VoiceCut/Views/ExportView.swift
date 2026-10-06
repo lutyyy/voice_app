@@ -116,7 +116,7 @@ struct ExportView: View {
             Text("說話者")
         } footer: {
             Text(model.speakerTurns.isEmpty
-                 ? "訪談、對談或會議可以標出誰在說話，逐字稿與字幕會加上名字。在手機上用 SpeakerKit 處理，第一次會下載約 30MB 的模型；知道人數時指定人數會更準。"
+                 ? "訪談、對談或會議可以標出誰在說話，逐字稿與字幕會加上名字。在手機上用 SpeakerKit 處理，第一次會下載語者辨識模型（請連 Wi‑Fi）；知道人數時指定人數會更準。"
                  : "點名字可以改名（例如主持人、來賓）。")
         }
     }
