@@ -19,6 +19,46 @@ jobs:
         working-directory: ios/AutoCutCore
         run: swift test
 
+  e2e:
+    name: 實際辨識測試（Mac，用合成中文語音）
+    needs: core-tests
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: 選用最新的 Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: 產生測試音檔（macOS 內建中文語音）
+        working-directory: ios/E2E
+        run: |
+          say -v '?' | grep -Ei 'zh_|chinese' || true
+          VOICE=$(say -v '?' | grep -E 'zh_TW' | head -1 | awk '{print $1}')
+          [ -z "$VOICE" ] && VOICE=$(say -v '?' | grep -E 'zh_' | head -1 | awk '{print $1}')
+          echo "voice=$VOICE"
+          TEXT="嗯，大家好，今天我們要來談談數位轉型。呃，其實數位轉型不只是買新的系統，而是要改變做事的方法。然後，那個，我們先看看第一個例子。這家公司原本都用紙本作業，後來全部改成線上流程，效率提升了很多。欸，第二個例子比較有趣，他們用資料來決定要開發什麼產品。"
+          say ${VOICE:+-v "$VOICE"} -o speech.aiff "$TEXT"
+          afconvert -f m4af -d aac -b 128000 speech.aiff test.m4a
+          afconvert -f m4af -d aac@16000 -c 1 speech.aiff test16k.m4a || true
+          afinfo test.m4a | grep -E "duration|Data format"
+      - name: 加入 App 的程式碼
+        working-directory: ios
+        run: cp VoiceCut/Services/MediaIO.swift VoiceCut/Services/Transcriber.swift E2E/Sources/E2E/
+      - name: 編譯
+        working-directory: ios/E2E
+        run: swift build -c release
+      - name: 整個檔案（快速）
+        working-directory: ios/E2E
+        run: .build/release/E2E test.m4a openai_whisper-base
+      - name: 只處理一段（快速，5～20 秒）
+        working-directory: ios/E2E
+        run: .build/release/E2E test.m4a openai_whisper-base 5 20
+      - name: 16kHz 單聲道錄音（快速）
+        working-directory: ios/E2E
+        run: if [ -f test16k.m4a ]; then .build/release/E2E test16k.m4a openai_whisper-base 3 15; fi
+      - name: 整個檔案（標準）
+        working-directory: ios/E2E
+        run: .build/release/E2E test.m4a openai_whisper-small
+
   build-app:
     name: 編譯 iOS App（產生未簽章 IPA）
     needs: core-tests
