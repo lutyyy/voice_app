@@ -86,6 +86,7 @@ final class ProjectModel: ObservableObject {
 
     /// 給 Transcriber 等回報進度用：nan 代表無法估計，畫面改成轉圈圈
     private func report(_ p: Double, _ s: String) {
+        guard isBusy else { return }  // 取消後模型仍在背景載入，不再更新畫面
         if step != s { say(s) }
         progress = p.isNaN ? nil : p
     }

@@ -17,6 +17,7 @@ struct ProjectView: View {
             switch model.stage {
             case .working: working
             case .failed(let msg): failed(msg)
+            case .idle where model.plan.isEmpty && !model.needsRange: idle
             default: EmptyView()
             }
             if !model.plan.isEmpty {
@@ -67,6 +68,19 @@ struct ProjectView: View {
         }
         .onChange(of: settings.cutReview) { _, _ in model.markStale() }
         .onChange(of: settings.cut) { _, _ in model.markStale() }
+    }
+
+    /// 取消後（還沒有辨識結果）：可以重新開始
+    private var idle: some View {
+        Section {
+            Button {
+                model.prepare()
+            } label: {
+                Label("開始處理", systemImage: "play.fill")
+            }
+        } footer: {
+            Text("已取消。模型若正在最佳化，會在背景繼續做完，下次開始就不用再等那麼久。")
+        }
     }
 
     private var header: some View {

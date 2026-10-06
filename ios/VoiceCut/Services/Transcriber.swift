@@ -49,13 +49,14 @@ final class Transcriber: ObservableObject {
         if loaded == model, pipe != nil { return }
         if let l = loading, l.model == model {
             progress(.nan, Self.optimizing)
-            try await l.task.value
+            try await Self.waitCancellable(l.task)
             return
         }
         pipe = nil
         loaded = nil
         readyModel = nil
         let task = Task { [self] in
+            defer { if loading?.model == model { loading = nil } }
             progress(0, "下載辨識模型（只有第一次需要）")
             let folder = try await WhisperKit.download(variant: model, progressCallback: { p in
                 progress(p.fractionCompleted, "下載辨識模型（只有第一次需要）")
@@ -71,8 +72,28 @@ final class Transcriber: ObservableObject {
             readyModel = model
         }
         loading = (model, task)
-        defer { if loading?.model == model { loading = nil } }
-        try await task.value
+        try await Self.waitCancellable(task)
+    }
+
+    /// 等待載入完成，但按「取消」時立刻返回。
+    /// 載入模型（尤其第一次最佳化）本身無法中斷，會在背景繼續做完，下次開始就不用再等
+    private static func waitCancellable(_ task: Task<Void, Error>) async throws {
+        let once = ResumeOnce()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                once.set(c)
+                Task {
+                    do {
+                        try await task.value
+                        once.resume(nil)
+                    } catch {
+                        once.resume(error)
+                    }
+                }
+            }
+        } onCancel: {
+            once.resume(CancellationError())
+        }
     }
 
     static let optimizing = "載入並最佳化辨識模型"
@@ -204,5 +225,34 @@ enum SpeedTier: String, CaseIterable, Identifiable {
     @MainActor
     static var recommended: SpeedTier {
         allCases.last { Transcriber.supported.contains($0.model) } ?? .fast
+    }
+}
+
+/// 只讓 continuation 恢復一次（完成與取消可能同時發生）
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<Void, Error>?
+    private var pending: Error??
+
+    func set(_ c: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if let p = pending {
+            lock.unlock()
+            if let e = p { c.resume(throwing: e) } else { c.resume() }
+            return
+        }
+        cont = c
+        lock.unlock()
+    }
+
+    /// nil = 成功
+    func resume(_ error: Error?) {
+        lock.lock()
+        guard pending == nil else { lock.unlock(); return }
+        pending = .some(error)
+        let c = cont
+        cont = nil
+        lock.unlock()
+        if let c { if let error { c.resume(throwing: error) } else { c.resume() } }
     }
 }
