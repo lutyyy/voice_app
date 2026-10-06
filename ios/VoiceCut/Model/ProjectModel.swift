@@ -28,6 +28,10 @@ final class ProjectModel: ObservableObject {
     @Published private(set) var liveLines: [String] = []
     /// 聲波概覽（0～1），分析完音量後才有
     @Published private(set) var waveform: [Float] = []
+    /// 依目前標記與參數預估的剪後長度（秒）；還沒分析音量時為 nil
+    @Published private(set) var estimate: Double?
+    private var estimateTask: Task<Void, Never>?
+    private var warmTask: Task<Void, Never>?
 
     private weak var store: ProjectStore?
     private var task: Task<Void, Never>?
@@ -179,7 +183,7 @@ final class ProjectModel: ObservableObject {
                 enter("model")
                 say("轉成辨識用的格式…", 0)
                 let audio = try await MediaIO.decode16k(sourceURL) { p in Task { @MainActor in self.progress = p } }
-                let model = settings.model.isEmpty ? Transcriber.defaultModel : settings.model
+                let model = settings.resolvedModel
                 try await Transcriber.shared.load(model: model) { p, s in
                     Task { @MainActor in self.report(p, s) }
                 }
@@ -200,13 +204,106 @@ final class ProjectModel: ObservableObject {
             enter("plan")
             say("標記要剪的地方…")
             let input = words
-            let p = await offMain { Planner.plan(input, speech: a.speech) }
+            let opts = settings.planOptions
+            let p = await offMain { Planner.plan(input, speech: a.speech, options: opts) }
             plan = p
             try save(p, "plan.json")
+            meta.planOptions = opts
             let s = Planner.summary(p)
             log.append("語助詞 \(s.fillers) 處、重複 \(s.repeats) 處、拖音 \(s.drags) 處、雜音 \(s.noise) 處 → 會剪；疑似贅詞 \(s.review) 處")
             meta.outputStale = meta.outputName != nil
             saveMeta()
+            refreshEstimate()
+        }
+    }
+
+    /// 開啟已處理過的專案時，在背景載入音量分析（不顯示處理畫面），
+    /// 以便預估剪後長度；拖音參數改過就順便重新標記
+    func warmUp() {
+        guard analysis == nil, warmTask == nil, !isBusy, !plan.isEmpty, let info = meta.info,
+              MediaInfo.workingRate(info.sampleRate) == info.sampleRate, pcmLooksValid(info) else { return }
+        let raw = url("pcm.f32")
+        warmTask = Task { [self] in
+            defer { warmTask = nil }
+            guard let src = try? MappedPCM(url: raw, sampleRate: info.sampleRate, channels: info.channels) else { return }
+            let a = await offMain { Analysis(src: src) }
+            if analysis == nil {
+                analysis = a
+                pcm = src
+                waveform = a.overview(bins: 160)
+            }
+            if !isBusy { await replanIfNeeded() }
+            refreshEstimate()
+        }
+    }
+
+    private func pcmLooksValid(_ info: MediaInfo) -> Bool {
+        let expect = Int(info.duration * Double(info.sampleRate)) * info.channels * 4
+        let size = (try? FileManager.default.attributesOfItem(atPath: url("pcm.f32").path)[.size] as? Int) ?? 0
+        return size > 0 && abs(size - expect) <= info.sampleRate * info.channels * 4
+    }
+
+    /// 拖音參數和產生標記時不同 → 用逐字稿重新標記，保留手動的決定與補剪找到的語助詞
+    private func replanIfNeeded() async {
+        let opts = settings.planOptions
+        guard !plan.isEmpty, (meta.planOptions ?? PlanOptions()) != opts, let a = analysis,
+              let words = try? load([Word].self, "words.json") else { return }
+        let old = plan
+        var p = await offMain { Planner.plan(words, speech: a.speech, options: opts) }
+        let manual = Self.manualMarks(old)
+        Self.forEachKey(p) { i, key in
+            if let m = manual[key] {
+                p[i].action = m.action
+                p[i].reason = m.reason
+            }
+        }
+        p = (p + old.filter { $0.rid != 0 }).enumerated()
+            .sorted { $0.element.start != $1.element.start ? $0.element.start < $1.element.start : $0.offset < $1.offset }
+            .map(\.element)
+        plan = p
+        try? save(p, "plan.json")
+        meta.planOptions = opts
+        meta.outputStale = meta.outputName != nil
+        saveMeta()
+        log.append("拖音設定改了，已重新標記（保留手動修改）")
+    }
+
+    /// 每個字的識別碼：句子編號＋文字＋在句中第幾次出現（拖音參數不影響）
+    private static func forEachKey(_ ws: [Word], _ body: (Int, String) -> Void) {
+        var count: [String: Int] = [:]
+        for (i, w) in ws.enumerated() where w.rid == 0 {
+            let k = "\(w.seg)|\(w.text)"
+            let n = count[k, default: 0]
+            count[k] = n + 1
+            body(i, "\(k)|\(n)")
+        }
+    }
+
+    private static func manualMarks(_ ws: [Word]) -> [String: (action: Action, reason: String)] {
+        var out: [String: (action: Action, reason: String)] = [:]
+        forEachKey(ws) { i, key in
+            if ws[i].reason.hasPrefix("手動") { out[key] = (ws[i].action, ws[i].reason) }
+        }
+        return out
+    }
+
+    /// 重新計算預估的剪後長度（只算剪接點，不輸出檔案，約零點幾秒）
+    func refreshEstimate() {
+        guard let a = analysis, let info = meta.info, !plan.isEmpty else { return }
+        let words = decided
+        let o = settings.renderOptions
+        let duration = min(info.duration, pcm?.duration ?? info.duration)
+        estimateTask?.cancel()
+        estimateTask = Task { [self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            if Task.isCancelled { return }
+            let secs = await offMain { () -> Double? in
+                let keep = words.filter { $0.action == .keep }
+                let gain = Renderer.breathGain(a, keepWords: keep, margin: o.breathMargin, maxCut: o.breathCut)
+                let segs = try? Renderer.segments(words, analysis: a, duration: duration, options: o, fps: info.fps, gain: gain)
+                return segs?.reduce(0) { $0 + $1.length }
+            }
+            if !Task.isCancelled { estimate = secs }
         }
     }
 
@@ -233,6 +330,11 @@ final class ProjectModel: ObservableObject {
             }
         }
         let src = try MappedPCM(url: raw, sampleRate: info.sampleRate, channels: info.channels)
+        if let a = analysis {  // 背景已經分析過（warmUp）
+            pcm = src
+            waveform = a.overview(bins: 160)
+            return
+        }
         enter("analyze")
         say("分析音量與人聲區間…")
         let a = await offMain { Analysis(src: src) }
@@ -293,6 +395,7 @@ final class ProjectModel: ObservableObject {
         meta.outputStale = meta.outputName != nil
         saveMeta()
         objectWillChange.send()
+        refreshEstimate()
         notice = "Claude 判斷：刪除 \(d.sentences.count) 句、剪掉 \(d.reviews.count) 個疑似贅詞（其餘保留）"
             + (d.missingCode ? "\n注意：回覆中沒有版本碼，無法確認是否對應目前的逐字稿。" : "")
         log.append(notice!)
@@ -303,12 +406,14 @@ final class ProjectModel: ObservableObject {
         meta.outputStale = meta.outputName != nil
         saveMeta()
         objectWillChange.send()
+        refreshEstimate()
     }
 
     // MARK: - 手動修改
 
     /// 設定改了（例如疑似贅詞要不要剪），已輸出的檔案需要重新輸出
     func markStale() {
+        refreshEstimate()
         guard meta.outputName != nil, !meta.outputStale else { return }
         meta.outputStale = true
         saveMeta()
@@ -325,6 +430,7 @@ final class ProjectModel: ObservableObject {
         try? save(plan, "plan.json")
         meta.outputStale = meta.outputName != nil
         saveMeta()
+        refreshEstimate()
     }
 
     // MARK: - 輸出
@@ -338,6 +444,7 @@ final class ProjectModel: ObservableObject {
         setSteps(list)
         run { [self] in
             try await ensureAnalysis()
+            await replanIfNeeded()
             var segs = try await renderOnce(stepped: true)
             if rounds > 0 {
                 for rnd in 1...rounds {
@@ -408,7 +515,7 @@ final class ProjectModel: ObservableObject {
     private func refineRound(_ rnd: Int, segs: [Seg]) async throws -> Int {
         guard let out = outputURL else { return 0 }
         let audio = try await MediaIO.decode16k(out)
-        let model = settings.model.isEmpty ? Transcriber.defaultModel : settings.model
+        let model = settings.resolvedModel
         try await Transcriber.shared.load(model: model) { p, s in
             Task { @MainActor in self.report(p, s) }
         }

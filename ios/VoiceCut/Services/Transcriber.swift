@@ -144,3 +144,63 @@ final class Transcriber: ObservableObject {
 
     private func r3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }
 }
+
+/// 處理速度：對應不同的辨識模型與補抓／補剪輪數
+enum SpeedTier: String, CaseIterable, Identifiable {
+    case fast, standard, ultimate
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .fast: return "快速"
+        case .standard: return "標準"
+        case .ultimate: return "極致"
+        }
+    }
+
+    var model: String {
+        switch self {
+        case .fast: return "openai_whisper-base"
+        case .standard: return "openai_whisper-small"
+        case .ultimate: return "openai_whisper-large-v3-v20240930_626MB"
+        }
+    }
+
+    var gapFill: Bool { self != .fast }
+    var refineRounds: Int {
+        switch self {
+        case .fast: return 0
+        case .standard: return 1
+        case .ultimate: return 2
+        }
+    }
+
+    var note: String {
+        switch self {
+        case .fast: return "Base 模型、不補抓不補剪。最快，但較容易漏掉語助詞，適合先試剪"
+        case .standard: return "Small 模型＋漏字補抓＋補剪 1 輪。速度與品質平衡"
+        case .ultimate: return "Large v3 Turbo 模型＋漏字補抓＋補剪 2 輪。最乾淨，處理時間約是標準的 2～3 倍"
+        }
+    }
+
+    /// 這支手機跑這個等級的風險；沒問題時為 nil
+    @MainActor
+    var warning: String? {
+        let modelName = Transcriber.candidates.first { $0.id == model }?.name ?? model
+        if !Transcriber.supported.contains(model) {
+            return "這支 iPhone 的晶片不建議跑 \(modelName) 模型：可能非常慢、發燙，或因記憶體不足而閃退。建議改用「\(SpeedTier.recommended.name)」。"
+        }
+        let gb = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        if self == .ultimate && gb < 5 {
+            return String(format: "這支 iPhone 的記憶體約 %.0f GB，極致模式處理長檔案（30 分鐘以上）可能很慢，或在背景被系統中止。", gb.rounded())
+        }
+        return nil
+    }
+
+    /// 這支手機能順跑的最高等級
+    @MainActor
+    static var recommended: SpeedTier {
+        allCases.last { Transcriber.supported.contains($0.model) } ?? .fast
+    }
+}

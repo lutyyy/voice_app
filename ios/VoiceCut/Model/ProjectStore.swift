@@ -17,6 +17,8 @@ struct ProjectMeta: Codable, Identifiable, Equatable {
     var outputStale = false
     /// Claude 的回覆（刪除清單）
     var deletes: String?
+    /// 產生目前標記時用的拖音參數（nil = 舊版預設）；設定改了就重新標記
+    var planOptions: PlanOptions?
 
     var displayName: String { (name as NSString).deletingPathExtension }
 }

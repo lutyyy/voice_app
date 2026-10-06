@@ -13,9 +13,31 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    PresetPicker()
+                    Text(settings.preset?.note ?? "已自訂參數").font(.caption).foregroundStyle(.secondary)
+                    NavigationLink("全部剪輯參數") { CutSettingsView() }
+                } header: {
+                    Text("剪輯風格")
+                } footer: {
+                    Text("自然：停頓留多一點；標準：與電腦版相同；精簡：盡量剪到最短。套用後可以在「全部剪輯參數」再微調。")
+                }
+
+                Section {
+                    SpeedPicker()
+                    Text(settings.speed?.note ?? "已自訂模型與補抓、補剪設定").font(.caption).foregroundStyle(.secondary)
+                    if let w = settings.speed?.warning {
+                        Label(w, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("處理速度")
+                } footer: {
+                    Text("這支手機建議：「\(SpeedTier.recommended.name)」。標有 ⚠︎ 的等級對這支手機負擔太重。")
+                }
+
+                Section {
                     Picker("辨識模型", selection: $settings.model) {
                         Text("自動（\(name(Transcriber.defaultModel))）").tag("")
-                        ForEach(Transcriber.candidates.filter { Transcriber.supported.contains($0.id) }) { m in
+                        ForEach(Transcriber.candidates.filter { Transcriber.supported.contains($0.id) || $0.id == settings.model }) { m in
                             Text(m.name).tag(m.id)
                         }
                     }
@@ -42,7 +64,7 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("語音辨識")
+                    Text("語音辨識（進階）")
                 } footer: {
                     Text("模型第一次使用時要下載，並由 iPhone 最佳化（約 2～10 分鐘，請連 Wi‑Fi、保持 App 開啟）；可以先按「預先下載並準備」。漏字補抓會把「有聲音但沒有字」的片段再聽一次，救回漏掉的語助詞；反覆補剪會重新辨識成品、補剪殘留的語助詞，品質較好但比較久。")
                 }
@@ -52,16 +74,6 @@ struct SettingsView: View {
                         Text("M4A（AAC，檔案小）").tag("m4a")
                         Text("WAV（無損）").tag("wav")
                     }
-                    VStack(alignment: .leading) {
-                        Text(String(format: "超過 %.2f 秒的停頓要壓縮", settings.maxPause))
-                        Slider(value: $settings.maxPause, in: 0.25...1.0, step: 0.05)
-                    }
-                    VStack(alignment: .leading) {
-                        Text(String(format: "壓縮後保留約 %.2f 秒", settings.keepPause))
-                        Slider(value: $settings.keepPause, in: 0.1...0.5, step: 0.01)
-                    }
-                    Toggle("壓低停頓中的呼吸聲", isOn: $settings.breathCut)
-                    Toggle("停頓太短時補環境底噪", isOn: $settings.roomtone)
                 } header: {
                     Text("輸出")
                 } footer: {
@@ -104,15 +116,10 @@ struct SettingsView: View {
                 }
             }
             .onAppear { key = settings.claudeKey }
-            .onChange(of: settings.keepPause) { _, v in
-                if settings.maxPause < v { settings.maxPause = v }
-            }
         }
     }
 
-    private var currentModel: String {
-        settings.model.isEmpty ? Transcriber.defaultModel : settings.model
-    }
+    private var currentModel: String { settings.resolvedModel }
 
     private func prepareModel() {
         preparing = true

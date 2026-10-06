@@ -52,8 +52,12 @@ struct ProjectView: View {
         } message: {
             Text(model.notice ?? "")
         }
-        .onAppear { model.prepareIfNeeded() }
+        .onAppear {
+            model.prepareIfNeeded()
+            model.warmUp()
+        }
         .onChange(of: settings.cutReview) { _, _ in model.markStale() }
+        .onChange(of: settings.cut) { _, _ in model.markStale() }
     }
 
     private var header: some View {
@@ -177,6 +181,27 @@ struct ProjectView: View {
 
     private var output: some View {
         Section {
+            VStack(alignment: .leading, spacing: 8) {
+                PresetPicker()
+                    .disabled(model.isBusy)
+                Text(settings.preset?.note ?? "自訂參數")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+            NavigationLink {
+                CutSettingsView()
+            } label: {
+                Label("微調剪輯參數", systemImage: "slider.horizontal.3")
+            }
+            if let info = model.meta.info, let e = model.estimate {
+                LabeledContent("預估剪後長度") {
+                    Text("約 \(ProjectModel.clock(e))（省下 \(Int(((1 - e / max(info.duration, 0.01)) * 100).rounded()))%）")
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(.default, value: e)
+                }
+            }
             if let url = model.outputURL, FileManager.default.fileExists(atPath: url.path) {
                 PlayerView(url: url, isVideo: model.meta.info?.isVideo == true,
                            version: model.meta.outputDuration ?? 0)

@@ -149,6 +149,44 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(a.overview(bins: 20).count, 20)
     }
 
+    func testPresets() throws {
+        XCTAssertEqual(CutPreset.matching(CutSettings()), .standard)
+        for p in CutPreset.allCases {
+            XCTAssertEqual(CutPreset.matching(p.settings), p)
+            XCTAssertEqual(p.settings.sanitized, p.settings, "\(p) 的參數應該彼此一致")
+        }
+        var s = CutPreset.natural.settings
+        s.render.keepPause += 0.01
+        XCTAssertNil(CutPreset.matching(s))
+        s.render.maxPause = 0.1
+        XCTAssertEqual(s.sanitized.render.maxPause, s.render.keepPause)
+        let data = try JSONEncoder().encode(CutPreset.compact.settings)
+        XCTAssertEqual(try JSONDecoder().decode(CutSettings.self, from: data), CutPreset.compact.settings)
+    }
+
+    /// 同一份音訊：精簡 < 標準 < 自然
+    func testPresetsOrderOutputLength() throws {
+        let sr = 16000
+        var x = [Float](repeating: 0, count: sr * 6)
+        var rng = SeededRandom(seed: 3)
+        for i in x.indices { x[i] = Float(rng.normal()) * 0.002 }
+        let talk: [(Double, Double)] = [(0.3, 1.5), (2.5, 3.6), (4.4, 5.6)]
+        for (a, b) in talk {
+            for i in Int(a * Double(sr))..<Int(b * Double(sr)) { x[i] += 0.3 * sinf(Float(i) * 0.06) }
+        }
+        let src = ArrayPCM(samples: x, sampleRate: sr)
+        let an = Analysis(src: src)
+        let words = talk.enumerated().map { k, t in Word(seg: k, start: t.0, end: t.1, text: "好") }
+        func length(_ p: CutPreset) throws -> Double {
+            let gain = [Float](repeating: 1, count: an.E.count)
+            return try Renderer.segments(words, analysis: an, duration: 6, options: p.settings.render, fps: nil, gain: gain)
+                .reduce(0) { $0 + $1.length }
+        }
+        let n = try length(.natural), s = try length(.standard), c = try length(.compact)
+        XCTAssertLessThan(c, s)
+        XCTAssertLessThan(s, n)
+    }
+
     func testUncoveredSpeech() {
         let ws = [Word(seg: 0, start: 1.0, end: 1.5, text: "好")]
         let gaps = Planner.uncoveredSpeech(words: ws, speech: [Span(0.5, 2.0)])

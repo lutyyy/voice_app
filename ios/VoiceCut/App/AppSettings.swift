@@ -18,22 +18,57 @@ final class AppSettings: ObservableObject {
     /// 自訂辨識提示詞（可放專有名詞）
     @AppStorage("prompt") var prompt = ""
 
-    @AppStorage("maxPause") var maxPause = 0.35
-    @AppStorage("keepPause") var keepPause = 0.22
-    @AppStorage("breathCut") var breathCut = true
-    @AppStorage("roomtone") var roomtone = true
+    /// 舊版的四個輸出設定；只用來把舊設定搬到 cutSettings
+    @AppStorage("maxPause") private var legacyMaxPause = 0.35
+    @AppStorage("keepPause") private var legacyKeepPause = 0.22
+    @AppStorage("breathCut") private var legacyBreathCut = true
+    @AppStorage("roomtone") private var legacyRoomtone = true
+    /// 全部剪輯參數（JSON）；空的代表還沒改過，沿用舊版設定
+    @AppStorage("cutSettings") private var cutData = Data()
 
     /// 已同意把逐字稿傳送給 Anthropic（App Review 5.1.2(i)：傳給第三方 AI 前需取得同意）
     @AppStorage("claudeConsent") var claudeConsent = false
 
-    var renderOptions: RenderOptions {
-        var o = RenderOptions()
-        o.maxPause = max(maxPause, keepPause)
-        o.keepPause = keepPause
-        o.breathCut = breathCut ? 18 : 0
-        o.roomtone = roomtone
-        return o
+    /// 目前的剪輯參數（預設＋使用者微調）
+    var cut: CutSettings {
+        get {
+            if let c = try? JSONDecoder().decode(CutSettings.self, from: cutData) { return c }
+            var c = CutSettings()
+            c.render.maxPause = max(legacyMaxPause, legacyKeepPause)
+            c.render.keepPause = legacyKeepPause
+            c.render.breathCut = legacyBreathCut ? 18 : 0
+            c.render.roomtone = legacyRoomtone
+            return c.sanitized
+        }
+        set { cutData = (try? JSONEncoder().encode(newValue)) ?? Data() }
     }
+
+    /// 目前的參數屬於哪個預設；改過任何一個值就是 nil（自訂）
+    var preset: CutPreset? { CutPreset.matching(cut) }
+
+    func apply(_ p: CutPreset) {
+        cut = p.settings
+        cutReview = p.cutReview
+    }
+
+    /// 實際使用的辨識模型
+    @MainActor
+    var resolvedModel: String { model.isEmpty ? Transcriber.defaultModel : model }
+
+    /// 目前的模型／補抓／補剪組合屬於哪個速度等級；自訂時為 nil
+    @MainActor
+    var speed: SpeedTier? {
+        SpeedTier.allCases.first { $0.model == resolvedModel && $0.gapFill == gapFill && $0.refineRounds == refineRounds }
+    }
+
+    func apply(_ t: SpeedTier) {
+        model = t.model
+        gapFill = t.gapFill
+        refineRounds = t.refineRounds
+    }
+
+    var renderOptions: RenderOptions { cut.sanitized.render }
+    var planOptions: PlanOptions { cut.sanitized.plan }
 
     var claudeKey: String {
         get { Keychain.read("claude-api-key") ?? "" }
