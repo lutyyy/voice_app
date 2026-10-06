@@ -23,7 +23,7 @@ final class ClipPlayer: ObservableObject {
         stop()
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         if self.url != url {
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            player.replaceCurrentItem(with: AVPlayerItem(asset: AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])))
             self.url = url
         }
         self.offset = offset

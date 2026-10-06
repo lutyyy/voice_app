@@ -66,7 +66,8 @@ enum MediaIO {
     /// 解碼成 Float32 交錯排列（AVAssetReader 會順便重新取樣與混音），逐段交給 sink
     static func decode(_ url: URL, sampleRate: Int, channels: Int, range: ClipRange? = nil,
                        progress: ((Double) -> Void)? = nil, sink: (UnsafeBufferPointer<Float>) throws -> Void) async throws {
-        let asset = AVURLAsset(url: url)
+        // 精確時間：mp3 等格式只處理一段時，起點才會準
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         if tracks.isEmpty { throw MediaError.noAudio }
         var duration = try await asset.load(.duration).seconds
@@ -212,10 +213,14 @@ enum VideoExporter {
         }
         cv.preferredTransform = try await vt.load(.preferredTransform)
         let ts: CMTimeScale = 90000
+        let trackRange = try await vt.load(.timeRange)
         var cursor = CMTime.zero
         for s in segs where s.kind == .src {
+            // 影像軌可能比整個檔案短一點，超出的部分會讓插入失敗
             let range = CMTimeRange(start: CMTime(seconds: s.start + offset, preferredTimescale: ts),
                                     end: CMTime(seconds: s.end + offset, preferredTimescale: ts))
+                .intersection(trackRange)
+            if range.duration <= .zero { continue }
             try cv.insertTimeRange(range, of: vt, at: cursor)
             cursor = cursor + range.duration
         }
@@ -238,11 +243,23 @@ enum VideoExporter {
             }
         }
         defer { timer.cancel() }
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            ex.exportAsynchronously { c.resume() }
+        let session = UncheckedBox(ex)
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                ex.exportAsynchronously { c.resume() }
+            }
+        } onCancel: {
+            session.value.cancelExport()
         }
+        try Task.checkCancellation()
         if ex.status != .completed {
             throw MediaError.exportFailed(ex.error?.localizedDescription ?? "未知錯誤")
         }
     }
+}
+
+/// 讓非 Sendable 的物件可以在取消處理中使用（只呼叫執行緒安全的方法）
+private final class UncheckedBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }

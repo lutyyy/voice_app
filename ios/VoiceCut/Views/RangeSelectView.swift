@@ -193,7 +193,7 @@ struct RangeSelectView: View {
                 start = 0
                 end = i.duration
             }
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            player.replaceCurrentItem(with: AVPlayerItem(asset: AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])))
             let bins = 320
             peaks = try await MediaIO.peaks(url, duration: i.duration, bins: bins) { p in
                 Task { @MainActor in loadProgress = p }
