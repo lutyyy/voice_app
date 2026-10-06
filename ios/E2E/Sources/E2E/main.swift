@@ -54,10 +54,12 @@ if words.isEmpty || CommandLine.arguments.contains("--diag") {
     // 診斷：同樣的音訊用不同解碼選項跑，找出是哪個選項讓結果變空
     let folder = try await WhisperKit.download(variant: model)
     // 全部用 CPU：CI 的虛擬機沒有真的神經網路引擎／GPU，用來分辨是環境還是設定的問題
-    let cpu = ModelComputeOptions(melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly, textDecoderCompute: .cpuOnly)
+    let cpu = ProcessInfo.processInfo.environment["E2E_DEFAULT_COMPUTE"] != nil
+        ? ModelComputeOptions()
+        : ModelComputeOptions(melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly, textDecoderCompute: .cpuOnly)
     let pipe = try await WhisperKit(WhisperKitConfig(model: model, modelFolder: folder.path, computeOptions: cpu, verbose: false,
                                                      logLevel: .error, prewarm: false, load: true, download: false))
-    print("diagnostic pipe: CPU only")
+    print("diagnostic pipe:", cpu.melCompute.rawValue, cpu.audioEncoderCompute.rawValue, cpu.textDecoderCompute.rawValue)
     let tok = pipe.tokenizer!
     let prompt = tok.encode(text: " 嗯，這個，呃，就是說，我們今天，然後，那個，欸，對，我覺得啊，喔。").filter { $0 < tok.specialTokens.specialTokenBegin }
     let variants: [(String, DecodingOptions)] = [

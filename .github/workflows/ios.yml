@@ -73,6 +73,14 @@ jobs:
         env:
           E2E_PROMPT: 數位轉型，藍湖策略
         run: .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB 0 15
+      - name: base／small 用預設運算單元（診斷）
+        continue-on-error: true
+        working-directory: ios/E2E
+        env:
+          E2E_DEFAULT_COMPUTE: "1"
+        run: |
+          .build/release/E2E test.m4a openai_whisper-base --diag || true
+          .build/release/E2E test.m4a openai_whisper-small --diag
       - name: 整個檔案（tiny）
         continue-on-error: true
         working-directory: ios/E2E
