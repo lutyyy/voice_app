@@ -151,8 +151,8 @@ struct PrivacyView: View {
                 Text("隱私權說明").font(.title2.bold())
                 Group {
                     Text("• 你匯入的音檔與影片只存在這支手機上的 App 資料夾，語音辨識與剪輯都在手機上完成，不會上傳。")
-                    Text("• 第一次使用時，App 會從 Hugging Face 下載語音辨識模型（WhisperKit），下載時不會傳送你的任何資料。")
-                    Text("• 只有在你設定了自己的 Claude API 金鑰、同意傳送，並按下「請 Claude 判斷」時，App 才會把逐字稿文字（不含聲音）傳送給 Anthropic，用來判斷要刪的句子與贅詞。Anthropic 如何處理 API 資料，請見其隱私權政策。")
+                    Text("• 第一次使用時，App 會從 Hugging Face 下載語音辨識模型（WhisperKit）；第一次辨識說話者時會下載語者辨識模型（SpeakerKit）。下載時不會傳送你的任何資料。")
+                    Text("• 只有在你設定了自己的 Claude API 金鑰、同意傳送，並按下「請 Claude 判斷」時，或「用 Claude 整理」時，App 才會把逐字稿文字（不含聲音）傳送給 Anthropic，用來判斷要刪的句子與贅詞，或整理成文章、摘要與章節。Anthropic 如何處理 API 資料，請見其隱私權政策。")
                     Text("• App 不收集使用數據、不做廣告追蹤，也沒有帳號系統。")
                     Text("• 刪除專案（在首頁向左滑）就會刪除該專案的所有檔案。刪除 App 會刪除全部資料。")
                 }

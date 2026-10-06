@@ -23,6 +23,8 @@ struct ProjectMeta: Codable, Identifiable, Equatable {
     var range: ClipRange?
     /// false = 新匯入、還沒選範圍（舊專案沒有這個欄位，視為已選）
     var rangeChosen: Bool?
+    /// 說話者自訂名稱（依編號）
+    var speakerNames: [String]?
 
     var displayName: String { (name as NSString).deletingPathExtension }
 }

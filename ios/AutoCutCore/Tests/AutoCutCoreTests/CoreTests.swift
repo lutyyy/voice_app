@@ -205,3 +205,55 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(gaps, [Span(0.5, 1.0), Span(1.5, 2.0)])
     }
 }
+
+final class SubtitleTests: XCTestCase {
+    private func w(_ seg: Int, _ s: Double, _ e: Double, _ t: String, _ a: Action = .keep) -> Word {
+        Word(seg: seg, start: s, end: e, text: t, action: a)
+    }
+
+    func testJoin() {
+        XCTAssertEqual(Subtitles.join(["我們", "用", "Swift", "UI", "寫"]), "我們用Swift UI寫")
+        XCTAssertEqual(Subtitles.join(["hello", "world", "。"]), "hello world。")
+    }
+
+    func testCuesAndSRT() {
+        let words = [w(0, 0, 0.5, "大家"), w(0, 0.5, 1, "好，"), w(1, 2, 2.4, "今天"), w(1, 2.4, 3, "開始。")]
+        let cues = Subtitles.cues(words, maxChars: 18)
+        XCTAssertEqual(cues.map(\.text), ["大家好", "今天開始"])
+        let srt = Subtitles.srt(cues)
+        XCTAssertTrue(srt.hasPrefix("1\n00:00:00,000 --> 00:00:01,000\n大家好\n"), srt)
+        XCTAssertTrue(srt.contains("2\n00:00:02,000 --> 00:00:03,000\n今天開始"))
+        let vtt = Subtitles.vtt(cues)
+        XCTAssertTrue(vtt.hasPrefix("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n大家好"))
+    }
+
+    func testLongSentenceSplits() {
+        let words = (0..<30).map { w(0, Double($0) * 0.2, Double($0) * 0.2 + 0.2, "字") }
+        let cues = Subtitles.cues(words, maxChars: 10)
+        XCTAssertEqual(cues.count, 3)
+        XCTAssertTrue(cues.allSatisfy { $0.text.count <= 10 })
+    }
+
+    func testMapToOutputDropsCuts() {
+        let words = [w(0, 0, 1, "我們"), w(0, 1, 1.5, "嗯", .cut), w(0, 2, 3, "開始")]
+        let segs = [Seg(0, 1, .src), Seg(2, 3, .src)]
+        let mapped = Subtitles.mapToOutput(words, segs: segs)
+        XCTAssertEqual(mapped.map(\.word.text), ["我們", "開始"])
+        XCTAssertEqual(mapped.map(\.index), [0, 2])
+        XCTAssertEqual(mapped[1].word.start, 1, accuracy: 1e-9)
+        XCTAssertEqual(mapped[1].word.end, 2, accuracy: 1e-9)
+    }
+
+    func testSpeakersAndText() {
+        let words = [w(0, 0, 1, "你好"), w(1, 1.2, 2, "嗨"), w(1, 2, 2.5, "你好")]
+        let turns = [SpeakerTurn(start: 0, end: 1.1, speaker: 0), SpeakerTurn(start: 1.1, end: 3, speaker: 1)]
+        let sp = Subtitles.speakers(for: words, turns: turns)
+        XCTAssertEqual(sp, [0, 1, 1])
+        let txt = Subtitles.text(words, speakers: sp)
+        XCTAssertEqual(txt, "說話者 1：\n你好。\n\n說話者 2：\n嗨你好。\n")
+        XCTAssertEqual(Subtitles.text(words), "你好。\n嗨你好。\n")
+        let cues = Subtitles.cues(words, speakers: sp)
+        XCTAssertEqual(cues.map(\.speaker), [0, 1])
+        XCTAssertTrue(Subtitles.srt(cues).contains("說話者 2：嗨你好"))
+    }
+}

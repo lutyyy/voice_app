@@ -116,6 +116,11 @@ struct ProjectView: View {
             } label: {
                 Label("檢視／修改逐字稿", systemImage: "text.badge.checkmark")
             }
+            NavigationLink {
+                ExportView(model: model)
+            } label: {
+                Label("逐字稿、字幕、說話者、AI 整理", systemImage: "captions.bubble")
+            }
         } header: {
             Text("自動標記")
         } footer: {

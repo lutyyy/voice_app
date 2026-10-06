@@ -31,6 +31,10 @@ final class ProjectModel: ObservableObject {
     /// 依目前標記與參數預估的剪後長度（秒）；還沒分析音量時為 nil
     @Published private(set) var estimate: Double?
     private var estimateTask: Task<Void, Never>?
+    /// 語者辨識結果（speakers.json）
+    @Published private(set) var speakerTurns: [SpeakerTurn] = []
+    /// Claude 整理的結果（依種類）
+    @Published private(set) var polished: [PolishTask: String] = [:]
     private var warmTask: Task<Void, Never>?
 
     private weak var store: ProjectStore?
@@ -43,6 +47,10 @@ final class ProjectModel: ObservableObject {
         self.meta = meta
         self.store = store
         plan = (try? load([Word].self, "plan.json")) ?? []
+        speakerTurns = (try? load([SpeakerTurn].self, "speakers.json")) ?? []
+        for t in PolishTask.allCases {
+            if let text = try? String(contentsOf: url("polish-\(t.rawValue).txt"), encoding: .utf8) { polished[t] = text }
+        }
         if !plan.isEmpty { stage = .ready }
     }
 
@@ -174,7 +182,8 @@ final class ProjectModel: ObservableObject {
 
     /// 重新辨識（刪除逐字稿與標記，從頭來）
     func retranscribe() {
-        for f in ["words.json", "plan.json", "pcm.f32"] { try? FileManager.default.removeItem(at: url(f)) }
+        for f in ["words.json", "plan.json", "pcm.f32", "speakers.json"] { try? FileManager.default.removeItem(at: url(f)) }
+        speakerTurns = []
         plan = []
         meta.info = nil
         analysis = nil
@@ -663,6 +672,116 @@ final class ProjectModel: ObservableObject {
         if liveLines.contains(t) { return }
         liveLines.append(t)
         if liveLines.count > 6 { liveLines.removeFirst(liveLines.count - 6) }
+    }
+
+    // MARK: - 逐字稿、字幕、說話者
+
+    var speakerCount: Int { Set(speakerTurns.map(\.speaker)).count }
+
+    func speakerName(_ i: Int) -> String {
+        if let n = meta.speakerNames, i < n.count, !n[i].trimmingCharacters(in: .whitespaces).isEmpty { return n[i] }
+        return "說話者 \(i + 1)"
+    }
+
+    func renameSpeaker(_ i: Int, to name: String) {
+        var n = meta.speakerNames ?? []
+        while n.count <= i { n.append("") }
+        n[i] = name
+        meta.speakerNames = n
+        saveMeta()
+    }
+
+    /// 辨識說話者（speakers 為 nil = 自動判斷人數）
+    func diarize(speakers: Int?) {
+        setSteps([("decode16", "轉成辨識用的格式"), ("diarize", "辨識說話者")])
+        run { [self] in
+            enter("decode16")
+            say("轉成辨識用的格式…", 0)
+            let audio = try await MediaIO.decode16k(sourceURL, range: meta.range) { p in
+                Task { @MainActor in self.progress = p }
+            }
+            enter("diarize")
+            say("辨識說話者（第一次會下載模型）…")
+            let turns = try await Diarizer.run(audio, speakers: speakers) { p in
+                Task { @MainActor in self.progress = p }
+            }
+            try Task.checkCancellation()
+            speakerTurns = turns
+            try save(turns, "speakers.json")
+            log.append("辨識出 \(speakerCount) 位說話者")
+        }
+    }
+
+    func clearSpeakers() {
+        speakerTurns = []
+        try? FileManager.default.removeItem(at: url("speakers.json"))
+    }
+
+    enum TimeBase: String, CaseIterable, Identifiable {
+        case output = "對齊剪好的檔案", source = "對齊原始檔案"
+        var id: String { rawValue }
+    }
+
+    /// 剪好的檔案是否和目前的標記一致（字幕才能對齊成品）
+    var outputFresh: Bool { meta.outputName != nil && !meta.outputStale && outputTime(for: 0) != nil }
+
+    /// 保留的字與說話者；時間換成成品或原檔（含處理範圍的開頭）
+    func exportWords(_ base: TimeBase) -> (words: [Word], speakers: [Int?]) {
+        let all = decided
+        let sp = Subtitles.speakers(for: all, turns: speakerTurns)
+        if base == .output, outputFresh, let segs = segsCache {
+            let m = Subtitles.mapToOutput(all, segs: segs)
+            return (m.map(\.word), m.map { sp[$0.index] })
+        }
+        let off = sourceOffset
+        var words: [Word] = []
+        var spk: [Int?] = []
+        for (i, w) in all.enumerated() where w.action == .keep {
+            var x = w
+            x.start += off
+            x.end += off
+            words.append(x)
+            spk.append(sp[i])
+        }
+        return (words, spk)
+    }
+
+    /// 寫出 TXT／SRT／VTT 到專案的 export 資料夾，回傳檔案
+    func exportFiles(_ base: TimeBase) throws -> [URL] {
+        let dir = url("export")
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (words, sp) = exportWords(base)
+        let names: (Int) -> String = { [self] in speakerName($0) }
+        let hasSpeakers = !speakerTurns.isEmpty
+        let cues = Subtitles.cues(words, speakers: hasSpeakers ? sp : nil)
+        let name = meta.displayName.replacingOccurrences(of: "/", with: "-")
+        let files: [(String, String)] = [
+            ("\(name).txt", Subtitles.text(words, speakers: hasSpeakers ? sp : nil, names: names)),
+            ("\(name).srt", Subtitles.srt(cues, names: names)),
+            ("\(name).vtt", Subtitles.vtt(cues, names: names)),
+        ]
+        return try files.map { f, text in
+            let u = dir.appendingPathComponent(f)
+            try text.write(to: u, atomically: true, encoding: .utf8)
+            return u
+        }
+    }
+
+    /// 請 Claude 整理逐字稿
+    func polish(_ task: PolishTask) {
+        let key = settings.claudeKey
+        let (words, sp) = exportWords(.output)
+        let text = Subtitles.text(words, speakers: speakerTurns.isEmpty ? nil : sp, timestamps: true,
+                                  names: { [self] in speakerName($0) })
+        setSteps([("claude", "Claude：\(task.name)")])
+        run { [self] in
+            enter("claude")
+            say("請 Claude \(task.name)…")
+            let reply = try await ClaudeClient(apiKey: key).polish(text, task: task)
+            polished[task] = reply
+            try reply.write(to: url("polish-\(task.rawValue).txt"), atomically: true, encoding: .utf8)
+        }
     }
 
     static func clock(_ t: Double) -> String {
