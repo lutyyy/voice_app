@@ -88,7 +88,10 @@ struct HomeView: View {
                     }
                 }
             }
-            .onOpenURL { url in importFile(url) }
+            // 只處理其他 App 分享進來的檔案；SideStore 安裝／重新簽章後會用 sidestore-… 網址打開 App，忽略即可
+            .onOpenURL { url in
+                if url.isFileURL { importFile(url) }
+            }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .alert("無法匯入", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("好") {}
