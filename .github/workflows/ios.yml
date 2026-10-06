@@ -1,0 +1,19 @@
+name: iOS App
+
+on:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  pull_request:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    name: 剪輯邏輯單元測試（Linux）
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift test
+        working-directory: ios/AutoCutCore
+        run: swift test
