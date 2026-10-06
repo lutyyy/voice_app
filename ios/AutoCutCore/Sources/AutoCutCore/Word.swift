@@ -25,10 +25,15 @@ public struct Word: Codable, Equatable, Sendable {
     public var rid: Int
     /// 拖音修剪前的結尾；斷句用，調整拖音參數時句子編號才不會跟著變
     public var fitEnd: Double?
+    /// 使用者修正的錯字（只影響顯示與逐字稿匯出；給 Claude 的版本碼仍用原文，剪輯位置不變）
+    public var edited: String?
+
+    /// 畫面與匯出用的文字
+    public var display: String { edited ?? text }
 
     public init(seg: Int, start: Double, end: Double, text: String, prob: Double? = nil,
                 extra: Bool = false, logprob: Double? = nil, misheard: String? = nil,
-                action: Action = .keep, reason: String = "", rid: Int = 0, fitEnd: Double? = nil) {
+                action: Action = .keep, reason: String = "", rid: Int = 0, fitEnd: Double? = nil, edited: String? = nil) {
         self.seg = seg
         self.start = start
         self.end = end
@@ -41,6 +46,7 @@ public struct Word: Codable, Equatable, Sendable {
         self.reason = reason
         self.rid = rid
         self.fitEnd = fitEnd
+        self.edited = edited
     }
 
     mutating func mark(_ action: Action, _ reason: String) {

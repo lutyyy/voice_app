@@ -187,6 +187,18 @@ final class CoreTests: XCTestCase {
         XCTAssertLessThan(s, n)
     }
 
+    func testToOutput() {
+        let segs = [Seg(0, 1, .src), Seg(0, 0.2, .noise), Seg(2, 3, .src)]
+        XCTAssertEqual(Renderer.toOutput(segs, 0.5)!, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(Renderer.toOutput(segs, 1.5)!, 1.2, accuracy: 1e-9)  // 被剪掉 → 接點
+        XCTAssertEqual(Renderer.toOutput(segs, 2.5)!, 1.7, accuracy: 1e-9)
+        XCTAssertNil(Renderer.toOutput(segs, 3.5))
+        for t in [0.25, 2.25, 2.9] {
+            let o = Renderer.toOutput(segs, t)!
+            XCTAssertEqual(Renderer.toSource(segs, o, o + 0.01).first!.start, t, accuracy: 1e-9)
+        }
+    }
+
     func testUncoveredSpeech() {
         let ws = [Word(seg: 0, start: 1.0, end: 1.5, text: "好")]
         let gaps = Planner.uncoveredSpeech(words: ws, speech: [Span(0.5, 2.0)])

@@ -181,6 +181,9 @@ final class ProjectModel: ObservableObject {
         pcm = nil
         waveform = []
         estimate = nil
+        undoStack = []
+        redoStack = []
+        segsCache = nil
         meta.deletes = nil
         meta.planOptions = nil
         meta.outputStale = true
@@ -276,8 +279,11 @@ final class ProjectModel: ObservableObject {
         let manual = Self.manualMarks(old)
         Self.forEachKey(p) { i, key in
             if let m = manual[key] {
-                p[i].action = m.action
-                p[i].reason = m.reason
+                if m.reason.hasPrefix("手動") {
+                    p[i].action = m.action
+                    p[i].reason = m.reason
+                }
+                p[i].edited = m.edited
             }
         }
         p = (p + old.filter { $0.rid != 0 }).enumerated()
@@ -302,10 +308,10 @@ final class ProjectModel: ObservableObject {
         }
     }
 
-    private static func manualMarks(_ ws: [Word]) -> [String: (action: Action, reason: String)] {
-        var out: [String: (action: Action, reason: String)] = [:]
+    private static func manualMarks(_ ws: [Word]) -> [String: (action: Action, reason: String, edited: String?)] {
+        var out: [String: (action: Action, reason: String, edited: String?)] = [:]
         forEachKey(ws) { i, key in
-            if ws[i].reason.hasPrefix("手動") { out[key] = (ws[i].action, ws[i].reason) }
+            if ws[i].reason.hasPrefix("手動") || ws[i].edited != nil { out[key] = (ws[i].action, ws[i].reason, ws[i].edited) }
         }
         return out
     }
@@ -448,15 +454,99 @@ final class ProjectModel: ObservableObject {
     /// 依目前設定，每個字最後是保留還是剪掉
     var decided: [Word] { Review.decide(plan, deletes: deletes, cutReview: settings.cutReview) }
 
-    /// 點一下切換保留／剪掉（手動的決定優先於 Claude 與自動規則）
-    func toggle(_ w: Word, to keep: Bool) {
-        guard let i = plan.firstIndex(where: { $0.start == w.start && $0.text == w.text && $0.end == w.end }) else { return }
-        plan[i].action = keep ? .keep : .cut
-        plan[i].reason = keep ? "手動保留" : "手動剪"
-        try? save(plan, "plan.json")
+    @Published private(set) var undoStack: [[Word]] = []
+    @Published private(set) var redoStack: [[Word]] = []
+
+    /// 修改標記：可以復原，存檔並標記需要重新輸出
+    private func edit(_ change: (inout [Word]) -> Void) {
+        guard !isBusy else { return }
+        var p = plan
+        change(&p)
+        if p == plan { return }
+        undoStack.append(plan)
+        if undoStack.count > 100 { undoStack.removeFirst() }
+        redoStack = []
+        commit(p)
+    }
+
+    private func commit(_ p: [Word]) {
+        plan = p
+        try? save(p, "plan.json")
         meta.outputStale = meta.outputName != nil
         saveMeta()
         refreshEstimate()
+    }
+
+    func undo() {
+        guard !isBusy, let p = undoStack.popLast() else { return }
+        redoStack.append(plan)
+        commit(p)
+    }
+
+    func redo() {
+        guard !isBusy, let p = redoStack.popLast() else { return }
+        undoStack.append(plan)
+        commit(p)
+    }
+
+    private func index(of w: Word, in p: [Word]) -> Int? {
+        p.firstIndex { $0.start == w.start && $0.text == w.text && $0.end == w.end }
+    }
+
+    private static func manual(_ w: inout Word, keep: Bool) {
+        w.action = keep ? .keep : .cut
+        w.reason = keep ? "手動保留" : "手動剪"
+    }
+
+    /// 點一下切換保留／剪掉（手動的決定優先於 Claude 與自動規則）
+    func toggle(_ w: Word, to keep: Bool) {
+        edit { p in
+            if let i = index(of: w, in: p) { Self.manual(&p[i], keep: keep) }
+        }
+    }
+
+    /// 整句保留或剪掉
+    func setSentence(_ seg: Int, keep: Bool) {
+        edit { p in
+            for i in p.indices where p[i].seg == seg { Self.manual(&p[i], keep: keep) }
+        }
+    }
+
+    /// 同樣的字（例如所有的「然後」）一起保留或剪掉；回傳改了幾個
+    @discardableResult
+    func setAll(like w: Word, keep: Bool) -> Int {
+        let key = TextRules.norm(w.text)
+        var n = 0
+        edit { p in
+            for i in p.indices where TextRules.norm(p[i].text) == key {
+                Self.manual(&p[i], keep: keep)
+                n += 1
+            }
+        }
+        return n
+    }
+
+    /// 修正錯字（空字串 = 還原成辨識結果）
+    func editText(_ w: Word, to text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        edit { p in
+            if let i = index(of: w, in: p) { p[i].edited = t.isEmpty || t == p[i].text ? nil : t }
+        }
+    }
+
+    // MARK: - 試聽
+
+    /// 原檔中的時間（處理範圍的開頭）
+    var sourceOffset: Double { meta.range?.start ?? 0 }
+
+    private var segsCache: [Seg]?
+
+    /// 原檔時間 t 在剪好的檔案中的位置；沒有輸出或輸出過期時為 nil
+    func outputTime(for t: Double) -> Double? {
+        guard meta.outputName != nil, !meta.outputStale else { return nil }
+        if segsCache == nil { segsCache = try? load([Seg].self, "segs.json") }
+        guard let segs = segsCache else { return nil }
+        return Renderer.toOutput(segs, t)
     }
 
     // MARK: - 輸出
@@ -530,6 +620,7 @@ final class ProjectModel: ObservableObject {
             try? FileManager.default.removeItem(at: url(old))
         }
         try save(segs, "segs.json")
+        segsCache = segs
         meta.outputName = outName
         meta.outputDuration = seconds
         saveMeta()

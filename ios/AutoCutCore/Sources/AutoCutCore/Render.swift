@@ -327,6 +327,19 @@ public enum Renderer {
     }
 
     /// 成品時間 [t0, t1] 對回原檔時間（可能跨多個片段；合成底噪的部分略過）
+    /// 原檔時間 t 在成品中的位置；t 被剪掉時回傳接點（下一段的開頭）。超出成品時為 nil
+    public static func toOutput(_ segs: [Seg], _ t: Double) -> Double? {
+        var pos = 0.0
+        for s in segs {
+            if s.kind == .src {
+                if t < s.start { return pos }
+                if t < s.end { return pos + t - s.start }
+            }
+            pos += s.length
+        }
+        return nil
+    }
+
     public static func toSource(_ segs: [Seg], _ t0: Double, _ t1: Double) -> [Span] {
         var out: [Span] = []
         var pos = 0.0
