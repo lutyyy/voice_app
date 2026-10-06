@@ -1,6 +1,7 @@
 import AVKit
 import AutoCutCore
 import SwiftUI
+import UIKit
 
 /// 專案頁：處理進度、標記摘要、Claude 判斷、輸出與分享
 struct ProjectView: View {

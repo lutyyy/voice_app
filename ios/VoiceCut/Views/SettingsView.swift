@@ -12,11 +12,11 @@ struct SettingsView: View {
                 Section {
                     Picker("辨識模型", selection: $settings.model) {
                         Text("自動（\(name(Transcriber.defaultModel))）").tag("")
-                        ForEach(Transcriber.candidates.filter { Transcriber.supported.contains($0.id) }, id: \.id) { m in
+                        ForEach(Transcriber.candidates.filter { Transcriber.supported.contains($0.id) }) { m in
                             Text(m.name).tag(m.id)
                         }
                     }
-                    ForEach(Transcriber.candidates.filter { Transcriber.supported.contains($0.id) }, id: \.id) { m in
+                    ForEach(Transcriber.candidates.filter { Transcriber.supported.contains($0.id) }) { m in
                         Text("\(m.name)：\(m.note)").font(.caption).foregroundStyle(.secondary)
                     }
                     Toggle("第二輪漏字補抓", isOn: $settings.gapFill)

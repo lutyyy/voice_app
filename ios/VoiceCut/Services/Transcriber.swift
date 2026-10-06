@@ -10,11 +10,17 @@ final class Transcriber {
     static let defaultPrompt = "嗯，這個，呃，就是說，我們今天，然後，那個，欸，對，我覺得啊，喔。"
     static let fillerPrompt = "嗯，呃，欸，啊，喔"
 
+    struct ModelChoice: Identifiable {
+        let id: String
+        let name: String
+        let note: String
+    }
+
     /// 介面上可選的模型（由小到大）
-    static let candidates: [(id: String, name: String, note: String)] = [
-        ("openai_whisper-base", "Base", "最快、約 140MB，中文準確度較低"),
-        ("openai_whisper-small", "Small", "約 480MB，速度與準確度平衡"),
-        ("openai_whisper-large-v3-v20240930_626MB", "Large v3 Turbo", "約 630MB，最準（建議 iPhone 14 以上）"),
+    static let candidates: [ModelChoice] = [
+        ModelChoice(id: "openai_whisper-base", name: "Base", note: "最快、約 140MB，中文準確度較低"),
+        ModelChoice(id: "openai_whisper-small", name: "Small", note: "約 480MB，速度與準確度平衡"),
+        ModelChoice(id: "openai_whisper-large-v3-v20240930_626MB", name: "Large v3 Turbo", note: "約 630MB，最準（建議 iPhone 14 以上）"),
     ]
 
     /// 這台裝置支援的模型
