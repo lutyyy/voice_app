@@ -19,13 +19,16 @@ struct HomeView: View {
                     Button {
                         showImporter = true
                     } label: {
-                        Label("從「檔案」選擇音檔或影片", systemImage: "folder")
+                        Label("從「檔案」選擇（含 Google 雲端硬碟、iCloud）", systemImage: "folder")
                     }
                     PhotosPicker(selection: $photoItem, matching: .videos) {
                         Label("從「照片」選擇影片", systemImage: "photo.on.rectangle")
                     }
                 } footer: {
-                    Text("自動剪掉語助詞（嗯、呃、欸…）、口吃重複、過長的停頓與停頓中的呼吸聲。辨識與剪輯都在 iPhone 上完成。")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("自動剪掉語助詞（嗯、呃、欸…）、口吃重複、過長的停頓與停頓中的呼吸聲。辨識與剪輯都在 iPhone 上完成。")
+                        Text("Google 雲端硬碟：在選檔畫面點右下角「瀏覽」，再選「Drive」。看不到的話，先安裝並登入「Google 雲端硬碟」App，再到「瀏覽」右上角「⋯ › 編輯」把 Drive 打開。")
+                    }
                 }
 
                 if importing {
