@@ -34,6 +34,10 @@ if peaks.isEmpty { fail("聲波是空的") }
 let audio = try await MediaIO.decode16k(url, range: range)
 print("16k samples \(audio.count) = \(Double(audio.count) / 16000) s")
 if audio.isEmpty { fail("16k 解碼是空的") }
+let peak = audio.map(abs).max() ?? 0
+let rms = (audio.reduce(0) { $0 + $1 * $1 } / Float(audio.count)).squareRoot()
+print("16k peak \(peak), rms \(rms), nan \(audio.contains { $0.isNaN })")
+if peak < 0.001 || peak > 100 { fail("16k 音訊數值異常") }
 
 let t0 = Date()
 try await Transcriber.shared.load(model: model) { p, s in if !p.isNaN { _ = p } else { print(s) } }
