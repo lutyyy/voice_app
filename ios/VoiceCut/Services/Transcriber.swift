@@ -177,7 +177,8 @@ final class Transcriber: ObservableObject {
             }
             if added { si += 1 }
         }
-        return words
+        // 超出音訊長度的字是模型幻覺（實測有提示詞時會在結尾補出提示詞）
+        return words.filter { $0.start < total }
     }
 
     /// 簡體轉繁體（Whisper 指定中文時常輸出簡體）

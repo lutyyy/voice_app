@@ -47,7 +47,6 @@ struct SettingsView: View {
                     Toggle("第二輪漏字補抓", isOn: $settings.gapFill)
                     Stepper("反覆補剪：\(settings.refineRounds == 0 ? "不做" : "\(settings.refineRounds) 輪")",
                             value: $settings.refineRounds, in: 0...3)
-                    TextField("提示詞（專有名詞，可留空）", text: $settings.prompt)
                     if transcriber.readyModel == currentModel {
                         Label("\(name(currentModel)) 模型已準備好", systemImage: "checkmark.circle")
                             .foregroundStyle(.green)

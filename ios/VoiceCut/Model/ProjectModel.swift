@@ -243,7 +243,8 @@ final class ProjectModel: ObservableObject {
                 }
                 enter("asr")
                 say("語音辨識中…", 0)
-                let prompt: String? = settings.prompt.isEmpty ? nil : settings.prompt
+                // 不用提示詞：實測會讓模型把提示詞的字直接補進逐字稿（或整段輸出空白）
+                let prompt: String? = nil
                 words = try await Transcriber.shared.transcribe(audio, prompt: prompt, progress: { p in
                     Task { @MainActor in self.progress = p }
                 }, onText: { t in
@@ -671,7 +672,8 @@ final class ProjectModel: ObservableObject {
             Task { @MainActor in self.report(p, s) }
         }
         say("第 \(rnd) 輪：重新辨識成品…", 0)
-        let prompt: String? = settings.prompt.isEmpty ? nil : settings.prompt
+        // 不用提示詞：實測會讓模型把提示詞的字直接補進逐字稿（或整段輸出空白）
+        let prompt: String? = nil
         var words = try await Transcriber.shared.transcribe(audio, prompt: prompt, progress: { p in
             Task { @MainActor in self.progress = p }
         }, onText: { t in
