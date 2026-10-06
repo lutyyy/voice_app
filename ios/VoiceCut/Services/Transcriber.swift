@@ -61,8 +61,10 @@ final class Transcriber: ObservableObject {
                 progress(p.fractionCompleted, "下載辨識模型（只有第一次需要）")
             })
             progress(.nan, Self.optimizing)
-            let config = WhisperKitConfig(model: model, modelFolder: folder.path, verbose: false, logLevel: .error,
-                                          prewarm: true, load: true, download: false)
+            // 背景不能用 GPU：聲譜計算改用 CPU（很輕），編碼與解碼本來就用神經網路引擎
+            let compute = ModelComputeOptions(melCompute: .cpuOnly)
+            let config = WhisperKitConfig(model: model, modelFolder: folder.path, computeOptions: compute, verbose: false,
+                                          logLevel: .error, prewarm: true, load: true, download: false)
             let p = try await WhisperKit(config)
             pipe = p
             loaded = model

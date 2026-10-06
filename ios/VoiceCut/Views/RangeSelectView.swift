@@ -47,6 +47,7 @@ struct RangeSelectView: View {
                         }
                         fineTune
                         preview
+                        if firstTime { beforeStart }
                         Text("拖曳兩側的把手選擇範圍，拖中間可以整段移動。只會辨識與輸出選取的部分，長檔案先剪掉不需要的開頭結尾可以省下很多時間。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -132,6 +133,23 @@ struct RangeSelectView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+    }
+
+    /// 開始辨識前的設定：速度（決定辨識模型，之後要改得重新辨識）與剪輯風格（之後隨時可以改）
+    private var beforeStart: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("開始前的設定").font(.headline)
+            Text("處理速度").font(.subheadline)
+            SpeedPicker()
+            Text("決定用哪個辨識模型；越慢越準。之後要換得重新辨識。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("剪輯風格").font(.subheadline).padding(.top, 4)
+            PresetPicker()
+            Text("剪多剪少，處理完後也可以隨時改，不用重新辨識。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding()
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var preview: some View {

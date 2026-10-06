@@ -14,8 +14,8 @@ final class ProjectModel: ObservableObject {
 
     @Published var meta: ProjectMeta
     @Published private(set) var stage: Stage = .idle
-    @Published private(set) var step = ""
-    @Published private(set) var progress: Double?
+    @Published private(set) var step = "" { didSet { reportBackground() } }
+    @Published private(set) var progress: Double? { didSet { reportBackground() } }
     /// 目前步驟開始的時間（畫面顯示「已經過」）
     @Published private(set) var stepStarted = Date()
     @Published private(set) var log: [String] = []
@@ -119,6 +119,14 @@ final class ProjectModel: ObservableObject {
         }
     }
 
+    /// 把整體進度交給背景工作（iOS 26 會顯示在系統的進度提示）
+    private func reportBackground() {
+        guard isBusy, !steps.isEmpty else { return }
+        let done = steps.filter { $0.state == .done }.count
+        let within = progress.map { $0.isFinite ? min(1, max(0, $0)) : 0 } ?? 0
+        BackgroundWork.shared.update((Double(done) + within) / Double(steps.count), step: step)
+    }
+
     private func finishSteps() {
         let now = Date()
         for k in steps.indices where steps[k].state == .running {
@@ -136,6 +144,8 @@ final class ProjectModel: ObservableObject {
         guard !isBusy else { return }
         stage = .working
         UIApplication.shared.isIdleTimerDisabled = true
+        let bg = BackgroundWork.shared
+        bg.begin(title: meta.displayName)
         task = Task {
             do {
                 try await work()
@@ -143,13 +153,16 @@ final class ProjectModel: ObservableObject {
                 stage = .ready
                 step = ""
                 progress = nil
+                bg.end(success: true, message: "處理好了，點這裡回到 App 查看")
             } catch is CancellationError {
                 stage = plan.isEmpty ? .idle : .ready
                 say("已取消")
+                bg.end(success: false, message: "已取消")
             } catch {
                 stage = plan.isEmpty ? .failed(error.localizedDescription) : .ready
                 notice = error.localizedDescription
                 log.append("錯誤：\(error.localizedDescription)")
+                bg.end(success: false, message: "發生問題：\(error.localizedDescription)")
             }
             UIApplication.shared.isIdleTimerDisabled = false
         }

@@ -41,6 +41,7 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
+        SWIFT_OBJC_BRIDGING_HEADER: VoiceCut/Support/VoiceCut-Bridging-Header.h
     info:
       path: VoiceCut/Info.plist
       properties:
@@ -56,6 +57,10 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         # 剪好的檔案也能在「檔案」App 的「我的 iPhone › 語音剪輯」看到
         UIFileSharingEnabled: true
+        # iOS 26：處理中切到背景可以繼續（系統顯示進度）。SideStore 會改 bundle ID，所以也列萬用字元
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.lutyyy.voicecut.process
+          - com.lutyyy.voicecut.*
         LSSupportsOpeningDocumentsInPlace: false
         ITSAppUsesNonExemptEncryption: false
         # 讓其他 App 的「分享」選單可以把影音檔丟給本 App
