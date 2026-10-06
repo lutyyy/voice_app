@@ -22,6 +22,7 @@ struct RangeSelectView: View {
     @State private var observer: Any?
     @State private var error: String?
     @State private var confirmShort = false
+    @State private var playToken: UUID?
 
     private var duration: Double { info?.duration ?? 0 }
     private var isWhole: Bool { start < 0.05 && end > duration - 0.05 }
@@ -207,18 +208,26 @@ struct RangeSelectView: View {
         stop()
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         stopAt = b
-        player.seek(to: CMTime(seconds: a, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         playhead = a
-        observer = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 20), queue: .main) { t in
-            MainActor.assumeIsolated {
-                let s = t.seconds
-                if s >= stopAt { stop() } else { playhead = s }
+        let token = UUID()
+        playToken = token
+        // 跳轉完成後才開始計時與播放，否則可能先讀到舊位置就停掉
+        player.seek(to: CMTime(seconds: a, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            Task { @MainActor in
+                guard playToken == token else { return }
+                observer = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 20), queue: .main) { t in
+                    MainActor.assumeIsolated {
+                        let s = t.seconds
+                        if s >= stopAt { stop() } else { playhead = s }
+                    }
+                }
+                player.play()
             }
         }
-        player.play()
     }
 
     private func stop() {
+        playToken = nil
         player.pause()
         if let observer { player.removeTimeObserver(observer) }
         observer = nil
@@ -293,13 +302,13 @@ private struct RangeWaveform: View {
             origin = (start, end)
         }
         let minLen = min(1, duration)
-        let t = Double(g.location.x / w) * duration
+        // 用拖曳的位移（不是手指的絕對位置），把手才不會一按就跳
+        let d = Double(g.translation.width / w) * duration
         switch target {
-        case .start: start = min(max(0, t), end - minLen)
-        case .end: end = max(min(duration, t), start + minLen)
+        case .start: start = min(max(0, origin.start + d), end - minLen)
+        case .end: end = max(min(duration, origin.end + d), start + minLen)
         case .move:
             let len = origin.end - origin.start
-            let d = Double(g.translation.width / w) * duration
             let s = min(max(0, origin.start + d), duration - len)
             start = s
             end = s + len

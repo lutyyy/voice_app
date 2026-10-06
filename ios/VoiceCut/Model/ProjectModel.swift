@@ -36,6 +36,8 @@ final class ProjectModel: ObservableObject {
     /// Claude 整理的結果（依種類）
     @Published private(set) var polished: [PolishTask: String] = [:]
     private var warmTask: Task<Void, Never>?
+    /// 每次重新辨識或改範圍就加一；背景載入完成時版本不同就丟掉結果
+    private var generation = 0
 
     private weak var store: ProjectStore?
     private var task: Task<Void, Never>?
@@ -196,6 +198,9 @@ final class ProjectModel: ObservableObject {
 
     /// 重新辨識（刪除逐字稿與標記，從頭來）
     func retranscribe() {
+        warmTask?.cancel()
+        warmTask = nil
+        generation += 1
         for f in ["words.json", "plan.json", "pcm.f32", "speakers.json"] { try? FileManager.default.removeItem(at: url(f)) }
         speakerTurns = []
         plan = []
@@ -272,10 +277,12 @@ final class ProjectModel: ObservableObject {
         guard analysis == nil, warmTask == nil, !isBusy, !plan.isEmpty, let info = meta.info,
               MediaInfo.workingRate(info.sampleRate) == info.sampleRate, pcmLooksValid(info) else { return }
         let raw = url("pcm.f32")
+        let gen = generation
         warmTask = Task { [self] in
-            defer { warmTask = nil }
+            defer { if gen == generation { warmTask = nil } }
             guard let src = try? MappedPCM(url: raw, sampleRate: info.sampleRate, channels: info.channels) else { return }
             let a = await offMain { Analysis(src: src) }
+            guard gen == generation, !Task.isCancelled else { return }
             if analysis == nil {
                 analysis = a
                 pcm = src
@@ -309,7 +316,7 @@ final class ProjectModel: ObservableObject {
                 p[i].edited = m.edited
             }
         }
-        p = (p + old.filter { $0.rid != 0 }).enumerated()
+        p = (p + old.filter { Self.isRefineRow($0) }).enumerated()
             .sorted { $0.element.start != $1.element.start ? $0.element.start < $1.element.start : $0.offset < $1.offset }
             .map(\.element)
         plan = p
@@ -320,10 +327,13 @@ final class ProjectModel: ObservableObject {
         log.append("拖音設定改了，已重新標記（保留手動修改）")
     }
 
+    /// 補剪（重新辨識成品）新增的列：不在逐字稿裡，重新標記時要原樣保留
+    private static func isRefineRow(_ w: Word) -> Bool { w.reason.contains("補剪") }
+
     /// 每個字的識別碼：句子編號＋文字＋在句中第幾次出現（拖音參數不影響）
     private static func forEachKey(_ ws: [Word], _ body: (Int, String) -> Void) {
         var count: [String: Int] = [:]
-        for (i, w) in ws.enumerated() where w.rid == 0 {
+        for (i, w) in ws.enumerated() where w.text != "～" && !isRefineRow(w) {
             let k = "\(w.seg)|\(w.text)"
             let n = count[k, default: 0]
             count[k] = n + 1

@@ -46,8 +46,11 @@ if let f = words.first, let l = words.last { print("time \(f.start) – \(l.end)
 if words.isEmpty || CommandLine.arguments.contains("--diag") {
     // 診斷：同樣的音訊用不同解碼選項跑，找出是哪個選項讓結果變空
     let folder = try await WhisperKit.download(variant: model)
-    let pipe = try await WhisperKit(WhisperKitConfig(model: model, modelFolder: folder.path, verbose: false, logLevel: .error,
-                                                     prewarm: false, load: true, download: false))
+    // 全部用 CPU：CI 的虛擬機沒有真的神經網路引擎／GPU，用來分辨是環境還是設定的問題
+    let cpu = ModelComputeOptions(melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly, textDecoderCompute: .cpuOnly)
+    let pipe = try await WhisperKit(WhisperKitConfig(model: model, modelFolder: folder.path, computeOptions: cpu, verbose: false,
+                                                     logLevel: .error, prewarm: false, load: true, download: false))
+    print("diagnostic pipe: CPU only")
     let tok = pipe.tokenizer!
     let prompt = tok.encode(text: " " + Transcriber.defaultPrompt).filter { $0 < tok.specialTokens.specialTokenBegin }
     let variants: [(String, DecodingOptions)] = [

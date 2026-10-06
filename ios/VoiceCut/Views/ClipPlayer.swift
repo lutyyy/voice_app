@@ -15,6 +15,8 @@ final class ClipPlayer: ObservableObject {
     private var stopAt = 0.0
     private var offset = 0.0
     private var tracksTranscript = false
+    /// 每次播放的識別；跳轉完成時已經換播別段就不動作
+    private var token: UUID?
 
     /// 播放 url 的 [a, b)；offset 是逐字稿時間 0 在檔案中的位置（只處理一段時）
     func play(_ url: URL, from a: Double, to b: Double, offset: Double = 0, id: String, tracksTranscript: Bool = true) {
@@ -29,8 +31,17 @@ final class ClipPlayer: ObservableObject {
         stopAt = b
         playingID = id
         current = tracksTranscript ? a : nil
+        let token = UUID()
+        self.token = token
+        // 跳轉完成後才開始計時與播放，否則可能先讀到舊位置就以為播完了
         player.seek(to: CMTime(seconds: max(0, a + offset), preferredTimescale: 600),
-                    toleranceBefore: .zero, toleranceAfter: .zero)
+                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor in self?.startPlayback(token) }
+        }
+    }
+
+    private func startPlayback(_ token: UUID) {
+        guard self.token == token else { return }
         observer = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] t in
             MainActor.assumeIsolated { self?.tick(t.seconds) }
         }
@@ -47,6 +58,7 @@ final class ClipPlayer: ObservableObject {
     }
 
     func stop() {
+        token = nil
         player.pause()
         if let observer { player.removeTimeObserver(observer) }
         observer = nil

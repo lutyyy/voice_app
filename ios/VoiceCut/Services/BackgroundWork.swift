@@ -17,10 +17,13 @@ final class BackgroundWork {
     private var subtitle = ""
     private var fraction = 0.0
     private var ticker: Timer?
+    /// 目前有沒有工作在跑（系統可能在工作結束後才啟動背景工作）
+    private var active = false
 
     /// 開始一段工作（使用者按下按鈕時呼叫，App 在前景）
     func begin(title: String) {
         self.title = title
+        active = true
         subtitle = ""
         fraction = 0
         askNotificationPermission()
@@ -41,6 +44,7 @@ final class BackgroundWork {
 
     /// 工作結束；在背景時發通知
     func end(success: Bool, message: String) {
+        active = false
         if UIApplication.shared.applicationState != .active {
             notify(title: success ? "\(title)：完成" : title, body: message)
         }
@@ -109,8 +113,8 @@ final class BackgroundWork {
 
     @available(iOS 26.0, *)
     private func started(_ task: BGTask) {
-        guard let t = task as? BGContinuedProcessingTask else {
-            task.setTaskCompleted(success: false)
+        guard let t = task as? BGContinuedProcessingTask, active else {
+            task.setTaskCompleted(success: true)
             return
         }
         continued = t

@@ -52,6 +52,13 @@ final class Transcriber: ObservableObject {
             try await Self.waitCancellable(l.task)
             return
         }
+        // 另一個模型還在載入（之前取消的）：先等它結束，避免兩個模型同時佔用記憶體
+        if let l = loading {
+            progress(.nan, Self.optimizing)
+            _ = try? await Self.waitCancellable(l.task)
+            try Task.checkCancellation()
+            if loaded == model, pipe != nil { return }
+        }
         pipe = nil
         loaded = nil
         readyModel = nil
@@ -67,6 +74,7 @@ final class Transcriber: ObservableObject {
             let config = WhisperKitConfig(model: model, modelFolder: folder.path, computeOptions: compute, verbose: false,
                                           logLevel: .error, prewarm: true, load: true, download: false)
             let p = try await WhisperKit(config)
+            guard loading?.model == model else { return }  // 已經改要別的模型
             pipe = p
             loaded = model
             readyModel = model
