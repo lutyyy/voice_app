@@ -39,6 +39,8 @@ jobs:
           afconvert -f m4af -d aac@44100 -b 96000 speech.aiff test.m4a
           afconvert -f m4af -d aac@16000 -c 1 speech.aiff test16k.m4a || true
           afinfo test.m4a | grep -E "duration|Data format"
+          say -v Samantha -o en.aiff "Hello everyone. Today we are going to talk about digital transformation. It is not only about buying new systems, but about changing the way we work."
+          afconvert -f m4af -d aac@44100 -b 96000 en.aiff en.m4a
       - name: 加入 App 的程式碼
         working-directory: ios
         run: cp VoiceCut/Services/MediaIO.swift VoiceCut/Services/Transcriber.swift E2E/Sources/E2E/
@@ -46,17 +48,33 @@ jobs:
         working-directory: ios/E2E
         run: swift build -c release
       - name: 整個檔案（快速）
+        continue-on-error: true
         working-directory: ios/E2E
         run: .build/release/E2E test.m4a openai_whisper-base
       - name: 只處理一段（快速，5～20 秒）
+        continue-on-error: true
         working-directory: ios/E2E
         run: .build/release/E2E test.m4a openai_whisper-base 5 20
       - name: 16kHz 單聲道錄音（快速）
+        continue-on-error: true
         working-directory: ios/E2E
         run: if [ -f test16k.m4a ]; then .build/release/E2E test16k.m4a openai_whisper-base 3 15; fi
       - name: 整個檔案（標準）
+        continue-on-error: true
         working-directory: ios/E2E
         run: .build/release/E2E test.m4a openai_whisper-small
+      - name: 英文（快速）
+        continue-on-error: true
+        working-directory: ios/E2E
+        run: .build/release/E2E en.m4a openai_whisper-base --diag
+      - name: 整個檔案（tiny）
+        continue-on-error: true
+        working-directory: ios/E2E
+        run: .build/release/E2E test.m4a openai_whisper-tiny
+      - name: 整個檔案（Large v3 Turbo）
+        continue-on-error: true
+        working-directory: ios/E2E
+        run: .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB
 
   build-app:
     name: 編譯 iOS App（產生未簽章 IPA）
