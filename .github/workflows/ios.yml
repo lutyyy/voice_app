@@ -57,7 +57,9 @@ jobs:
             MARKETING_VERSION="$APP_VERSION" CURRENT_PROJECT_VERSION="$APP_BUILD" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             | tee build.log | grep -E "error:|warning: .*VoiceCut|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/Build/Products/Release-iphoneos/VoiceCut.app
+          # 編譯失敗時 .app 資料夾仍可能存在（只有資源、沒有主程式），一定要確認主程式有產生
+          if grep -q "BUILD FAILED" build.log; then grep -E "error:" build.log | sort -u | head -50; exit 1; fi
+          test -f build/Build/Products/Release-iphoneos/VoiceCut.app/VoiceCut
       - name: 檢查 App 名稱（SideStore 只接受英文的 App ID 名稱）
         working-directory: ios
         run: |
@@ -73,6 +75,7 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/VoiceCut.app Payload/
+          test -f Payload/VoiceCut.app/VoiceCut
           zip -qry VoiceCut-unsigned.ipa Payload
           ls -lh VoiceCut-unsigned.ipa
       - name: 發布新版（SideStore 來源）

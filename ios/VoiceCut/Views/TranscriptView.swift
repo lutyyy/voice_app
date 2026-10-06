@@ -318,18 +318,30 @@ struct WordChip: View {
         ["疑似贅詞", "附和", "漏字", "疑似聽錯"].contains { w.reason.contains($0) }
     }
 
+    private var cut: Bool { word.action == .cut }
+
+    private var textColor: Color {
+        if cut { return Color.red.opacity(0.8) }
+        return word.extra ? Color.secondary : Color.primary
+    }
+
+    private var fillColor: Color {
+        if playing { return Color.orange.opacity(0.35) }
+        return cut ? Color.red.opacity(0.12) : Color.clear
+    }
+
+    private var borderColor: Color { Self.isReviewOrigin(word) ? Color.orange : Color.clear }
+
     var body: some View {
-        let cut = word.action == .cut
         Text(word.display)
             .font(.body)
-            .underline(word.edited != nil, color: .blue)
-            .strikethrough(cut, color: .red)
-            .foregroundStyle(cut ? Color.red.opacity(0.8) : (word.extra ? Color.secondary : Color.primary))
+            .underline(word.edited != nil, color: Color.blue)
+            .strikethrough(cut, color: Color.red)
+            .foregroundStyle(textColor)
             .padding(.horizontal, 3)
             .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 4).fill(
-                playing ? Color.orange.opacity(0.35) : (cut ? Color.red.opacity(0.12) : Color.clear)))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Self.isReviewOrigin(word) ? Color.orange : .clear, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 4).fill(fillColor))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(borderColor, lineWidth: 1))
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
             .accessibilityLabel(word.display + (cut ? "，會剪掉" : ""))
