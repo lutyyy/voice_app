@@ -128,19 +128,32 @@ final class Transcriber: ObservableObject {
                     onText: ((String) -> Void)? = nil) async throws -> [Word] {
         let p = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let p, !p.isEmpty {
-            let words = try await transcribeOnce(audio, prompt: p, progress: progress, onText: onText)
+            let words = try await transcribeOnce(audio, prompt: p, relaxed: false, progress: progress, onText: onText)
             if !words.isEmpty { return words }
         }
-        return try await transcribeOnce(audio, prompt: nil, progress: progress, onText: onText)
+        let words = try await transcribeOnce(audio, prompt: nil, relaxed: false, progress: progress, onText: onText)
+        if !words.isEmpty { return words }
+        // 實測：從句子中間開始的片段，第一個字的信心常低於 WhisperKit 的門檻（-1.5）而整段被丟掉；放寬再試一次
+        let relaxed = try await transcribeOnce(audio, prompt: nil, relaxed: true, progress: progress, onText: onText)
+        return Self.looksLikeLoop(relaxed) ? [] : relaxed
     }
 
-    private func transcribeOnce(_ audio: [Float], prompt: String?, progress: @escaping (Double) -> Void,
+    /// 放寬門檻時偶爾會輸出同一個字重複幾百次（模型幻覺），這種結果不採用
+    nonisolated static func looksLikeLoop(_ words: [Word]) -> Bool {
+        guard words.count >= 20 else { return false }
+        var count: [String: Int] = [:]
+        for w in words { count[w.text, default: 0] += 1 }
+        return Double(count.values.max() ?? 0) / Double(words.count) > 0.5
+    }
+
+    private func transcribeOnce(_ audio: [Float], prompt: String?, relaxed: Bool, progress: @escaping (Double) -> Void,
                                 onText: ((String) -> Void)?) async throws -> [Word] {
         guard let pipe else { throw MediaError.readFailed("模型尚未載入") }
         let total = Double(audio.count) / 16000
         let opts = DecodingOptions(
             task: .transcribe, language: "zh", temperature: 0, usePrefillPrompt: true, skipSpecialTokens: true,
-            wordTimestamps: true, promptTokens: prompt.flatMap { tokens($0) }, chunkingStrategy: .vad)
+            wordTimestamps: true, promptTokens: prompt.flatMap { tokens($0) },
+            firstTokenLogProbThreshold: relaxed ? nil : -1.5, chunkingStrategy: .vad)
         pipe.segmentDiscoveryCallback = { segs in
             if let e = segs.map(\.end).max(), total > 0 { progress(min(1, Double(e) / total)) }
             if let onText {
