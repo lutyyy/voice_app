@@ -247,40 +247,29 @@ private struct StepList: View {
     }
 }
 
-/// 專案頁處理中的全畫面：大進度圈＋第幾步、約剩多久，其餘空間給即時逐字稿；步驟清單收在「詳細」
+/// 專案頁處理中的全畫面：大進度圈＋第幾步、約剩多久，其餘空間給即時逐字稿
 struct ProcessingHero: View {
     @ObservedObject var model: ProjectModel
-    @State private var showSteps = false
 
     var body: some View {
         VStack(spacing: 18) {
             ProgressRing(progress: model.progress)
                 .frame(width: 150, height: 150)
                 .padding(.top, 12)
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 Text(ProcessingCard.title(model)).font(.title3.weight(.bold))
                 TimelineView(.periodic(from: model.stepStarted, by: 1)) { ctx in
                     Text(subtitle(ctx.date))
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Button(showSteps ? "收起步驟" : "詳細") {
-                    withAnimation(.spring(duration: 0.3)) { showSteps.toggle() }
+                if let note = shortNote {
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 4)
                 }
-                .font(.footnote.weight(.semibold))
-                .padding(.top, 2)
-            }
-            if showSteps {
-                StepList(steps: model.steps)
-                    .padding()
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-            if Transcriber.isOptimizing(model.step) {
-                Text(ProcessingCard.optimizeNote(model))
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
             }
             HeroTranscript(lines: model.liveLines)
                 .fixedSize(horizontal: false, vertical: true)
@@ -296,18 +285,33 @@ struct ProcessingHero: View {
         .padding(.bottom, 12)
     }
 
-    /// 「第 3 步，共 5 步 · 約剩 2 分鐘」
+    /// 「第 3／5 步 · 這步約剩 4 分鐘」：剩餘時間以分鐘計，不會每秒跳動
     private func subtitle(_ now: Date) -> String {
         var parts: [String] = []
         if let i = model.steps.firstIndex(where: { $0.state == .running }) {
-            parts.append("第 \(i + 1) 步，共 \(model.steps.count) 步")
+            parts.append("第 \(i + 1)／\(model.steps.count) 步")
         }
-        if let eta = model.eta(at: now) {
-            parts.append(eta < 60 ? "不到 1 分鐘" : "約剩 " + ProjectModel.clock(eta))
-        } else {
-            parts.append("已經過 " + ProjectModel.clock(now.timeIntervalSince(model.stepStarted)))
+        if let eta = remaining(now) {
+            parts.append(eta < 60 ? "這步快好了" : "這步約剩 \(Int((eta / 60).rounded(.up))) 分鐘")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// 準備模型時用上次花的時間倒數（穩定往下減）；其他步驟用進度推算
+    private func remaining(_ now: Date) -> Double? {
+        if Transcriber.isOptimizing(model.step),
+           let last = Transcriber.lastOptimizeSeconds(AppSettings.shared.resolvedModel) {
+            return max(0, last - now.timeIntervalSince(model.stepStarted))
+        }
+        return model.eta(at: now)
+    }
+
+    /// 只在準備模型時說一句為什麼要等
+    private var shortNote: String? {
+        guard Transcriber.isOptimizing(model.step) else { return nil }
+        return model.step == Transcriber.optimizing
+            ? "第一次使用要先準備辨識模型，之後就快了"
+            : "App 更新後要重新準備辨識模型，不用重新下載"
     }
 }
 
