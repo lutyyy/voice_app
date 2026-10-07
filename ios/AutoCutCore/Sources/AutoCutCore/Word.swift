@@ -27,6 +27,9 @@ public struct Word: Codable, Equatable, Sendable {
     public var fitEnd: Double?
     /// 使用者修正的錯字（只影響顯示與逐字稿匯出；給 Claude 的版本碼仍用原文，剪輯位置不變）
     public var edited: String?
+    /// 第一次手動改之前的自動判斷（「還原自動判斷」用；沒手動改過時為 nil）
+    public var autoAction: Action?
+    public var autoReason: String?
 
     /// 畫面與匯出用的文字
     public var display: String { edited ?? text }

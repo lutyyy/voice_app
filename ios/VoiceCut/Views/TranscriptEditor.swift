@@ -98,9 +98,18 @@ struct TranscriptEditor: View {
                             Button {
                                 model.setSentence(s.id, keep: true)
                             } label: {
-                                Label("整句保留", systemImage: "arrow.uturn.backward")
+                                Label("整句保留", systemImage: "checkmark")
                             }
                             .tint(.green)
+                            // 改過的句子多一個「還原」：回到自動判斷的剪法
+                            if s.words.contains(where: ProjectModel.isManual) {
+                                Button {
+                                    model.restoreSentence(s.id)
+                                } label: {
+                                    Label("還原", systemImage: "arrow.uturn.backward")
+                                }
+                                .tint(.gray)
+                            }
                         }
                 }
             }
@@ -229,7 +238,7 @@ struct TranscriptEditor: View {
                 }
             }
             if !hintSeen {
-                Text("點字切換剪／留 · 長按試聽或改字 · 左右滑整句 · 點時間從那句播")
+                Text("點字切換剪／留 · 長按試聽、改字或還原 · 左右滑整句 · 點時間從那句播")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -359,6 +368,9 @@ struct TranscriptEditor: View {
         Button(cut ? "保留" : "剪掉", systemImage: cut ? "checkmark" : "scissors") { model.toggle(w, to: cut) }
         Button("試聽這裡", systemImage: "play") {
             player.play(model.sourceURL, from: max(0, w.start - 0.6), to: w.end + 0.6, offset: model.sourceOffset, id: "w")
+        }
+        if ProjectModel.isManual(w) {
+            Button("還原自動判斷", systemImage: "arrow.uturn.backward") { model.restore(w) }
         }
         Button("修改文字…", systemImage: "pencil") {
             editText = w.display

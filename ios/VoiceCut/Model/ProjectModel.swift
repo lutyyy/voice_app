@@ -341,6 +341,9 @@ final class ProjectModel: ObservableObject {
         Self.forEachKey(p) { i, key in
             if let m = manual[key] {
                 if m.reason.hasPrefix("手動") {
+                    // 自動判斷改用新參數算出來的
+                    p[i].autoAction = p[i].action
+                    p[i].autoReason = p[i].reason
                     p[i].action = m.action
                     p[i].reason = m.reason
                 }
@@ -560,8 +563,38 @@ final class ProjectModel: ObservableObject {
     }
 
     private static func manual(_ w: inout Word, keep: Bool) {
+        // 第一次手動改時記下原本的自動判斷，之後可以還原
+        if !w.reason.hasPrefix("手動") {
+            w.autoAction = w.action
+            w.autoReason = w.reason
+        }
         w.action = keep ? .keep : .cut
         w.reason = keep ? "手動保留" : "手動剪"
+    }
+
+    /// 回到手動改之前的自動判斷（舊版改過的字沒有記錄，就當作保留）
+    private static func restoreAuto(_ w: inout Word) {
+        guard w.reason.hasPrefix("手動") else { return }
+        w.action = w.autoAction ?? .keep
+        w.reason = w.autoReason ?? ""
+        w.autoAction = nil
+        w.autoReason = nil
+    }
+
+    nonisolated static func isManual(_ w: Word) -> Bool { w.reason.hasPrefix("手動") }
+
+    /// 一個字還原自動判斷
+    func restore(_ w: Word) {
+        edit { p in
+            if let i = index(of: w, in: p) { Self.restoreAuto(&p[i]) }
+        }
+    }
+
+    /// 整句還原自動判斷
+    func restoreSentence(_ seg: Int) {
+        edit { p in
+            for i in p.indices where p[i].seg == seg { Self.restoreAuto(&p[i]) }
+        }
     }
 
     /// 點一下切換保留／剪掉（手動的決定優先於 Claude 與自動規則）
