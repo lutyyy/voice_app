@@ -612,6 +612,56 @@ final class ProjectModel: ObservableObject {
         saveMeta()
     }
 
+    /// 給 Claude／Gemini App 的加標點請求
+    var punctuationRequest: String { Punctuate.request(plan) }
+
+    /// 貼回 Claude／Gemini App 的回覆：只取標點、字不改
+    func applyPunctuationReply(_ reply: String) throws {
+        guard !isBusy else { return }
+        var p = plan
+        let n = try Punctuate.applyReply(reply, to: &p)
+        commitPunctuation(p, log: "依回覆加了 \(n) 個標點")
+    }
+
+    private func commitPunctuation(_ p: [Word], log line: String) {
+        plan = p
+        try? save(p, "plan.json")
+        meta.punctuated = true
+        saveMeta()
+        log.append(line)
+    }
+
+    /// 用 Claude API 依語意加標點；很長的逐字稿分段送（每段約 3000 字，在句子交界切）
+    func punctuateWithClaude() {
+        let key = settings.claudeKey
+        setSteps([("claude", "Claude 加標點")])
+        run { [self] in
+            enter("claude")
+            var p = plan
+            var ranges: [Range<Int>] = []
+            var start = 0, chars = 0
+            for i in p.indices {
+                chars += p[i].display.count
+                let endOfSentence = i + 1 == p.count || p[i + 1].seg != p[i].seg
+                if (chars >= 3000 && endOfSentence) || i + 1 == p.count {
+                    ranges.append(start..<(i + 1))
+                    start = i + 1
+                    chars = 0
+                }
+            }
+            var total = 0
+            for (k, r) in ranges.enumerated() {
+                say("請 Claude 加標點（\(k + 1)／\(ranges.count)）…", Double(k) / Double(max(1, ranges.count)))
+                var slice = Array(p[r])
+                let reply = try await ClaudeClient(apiKey: key).complete(Punctuate.request(slice))
+                total += try Punctuate.applyReply(reply, to: &slice)
+                p.replaceSubrange(r, with: slice)
+            }
+            Punctuate.resegment(&p)
+            commitPunctuation(p, log: "Claude 加了 \(total) 個標點")
+        }
+    }
+
     /// 一定是語助詞（嗯、呃…）：逐字稿可以選擇去掉
     nonisolated static func isFiller(_ w: Word) -> Bool {
         let n = TextRules.norm(w.text)

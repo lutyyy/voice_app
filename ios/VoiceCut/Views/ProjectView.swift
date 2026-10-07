@@ -21,6 +21,7 @@ struct ProjectView: View {
     @State private var copied = false
     @State private var showTranscriptExport = false
     @State private var confirmConvert = false
+    @State private var showAskPunct = false
     @AppStorage("transcriptDropFillers") private var dropFillers = true
     @StateObject private var player = ClipPlayer()
     /// 播放鍵：剪後（跳過剪掉的字）或原音；長按切換
@@ -52,6 +53,7 @@ struct ProjectView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showLog) { LogView(lines: model.log, runs: model.runs) }
             .sheet(isPresented: $showAsk) { AskAppSheet(model: model) }
+            .sheet(isPresented: $showAskPunct) { AskAppSheet(model: model, punctuate: true) }
             .sheet(isPresented: $showTranscriptExport) { TranscriptExportSheet(model: model, dropFillers: dropFillers) }
             .confirmationDialog("改成剪輯專案？", isPresented: $confirmConvert, titleVisibility: .visible) {
                 Button("改成剪輯專案") { model.convertToEdit() }
@@ -360,6 +362,16 @@ struct ProjectView: View {
         Menu {
             if model.meta.isTranscript {
                 if !model.plan.isEmpty {
+                    Section("依語意重新加標點") {
+                        if settings.claudeReady {
+                            Button("用 Claude 加標點", systemImage: "sparkles") { model.punctuateWithClaude() }
+                                .disabled(model.isBusy)
+                        } else {
+                            Button("設定 Claude 金鑰…", systemImage: "key") { showSettings = true }
+                        }
+                        Button("用 Claude／Gemini App 加標點", systemImage: "arrow.up.forward.app") { showAskPunct = true }
+                            .disabled(model.isBusy)
+                    }
                     Button("改成剪輯專案", systemImage: "scissors") { confirmConvert = true }
                         .disabled(model.isBusy)
                 }
@@ -492,6 +504,8 @@ private struct PlayerView: View {
 /// 用 Claude／Gemini App（使用者自己的訂閱）判斷：分享逐字稿過去，複製回覆後回來一鍵貼上
 private struct AskAppSheet: View {
     @ObservedObject var model: ProjectModel
+    /// 判斷要剪的句子，或幫逐字稿加標點
+    var punctuate = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var phase
     /// 打開這頁時的剪貼簿版本；之後變了代表複製了新東西
@@ -509,7 +523,7 @@ private struct AskAppSheet: View {
                         Text("分享面板裡選 Claude 或 Gemini App（沒看到就按「拷貝」，再自己打開 App 貼上）。指示已經包含在內容裡，不用另外打字。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        ShareLink(item: model.sentencesText) {
+                        ShareLink(item: punctuate ? model.punctuationRequest : model.sentencesText) {
                             Label("分享逐字稿", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(PillButtonStyle(prominent: !left))
@@ -532,13 +546,14 @@ private struct AskAppSheet: View {
                                 .foregroundStyle(.orange)
                         }
                     }
-                    Text("回覆要包含「版本碼」那一行，App 才能確認它對應的是目前的逐字稿。")
+                    Text(punctuate ? "App 只會取回覆裡的標點，字一個都不會改；回覆的字和逐字稿差太多時不會套用。"
+                         : "回覆要包含「版本碼」那一行，App 才能確認它對應的是目前的逐字稿。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .padding()
             }
-            .navigationTitle("用 Claude／Gemini App 判斷")
+            .navigationTitle(punctuate ? "用 Claude／Gemini App 加標點" : "用 Claude／Gemini App 判斷")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
@@ -563,7 +578,11 @@ private struct AskAppSheet: View {
             return
         }
         do {
-            try model.applyReply(text)
+            if punctuate {
+                try model.applyPunctuationReply(text)
+            } else {
+                try model.applyReply(text)
+            }
             dismiss()
         } catch {
             self.error = error.localizedDescription

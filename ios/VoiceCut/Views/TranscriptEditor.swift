@@ -68,6 +68,9 @@ struct TranscriptEditor: View {
         let shown = visible(all)
         let who = model.sentenceSpeaker
         let points = model.joinPoints
+        // 依停頓補的標點（只顯示，不改資料、不影響剪接與 Claude 判斷）
+        let punct = Punctuate.marks(words)
+        let punctAt = Dictionary(punct.map { (words[$0.key].start, $0.value) }, uniquingKeysWith: { a, _ in a })
         // 記號放在接點後面那個字（B）前面
         let joinAt = showJoins ? Dictionary(points.map { ($0.bStart, $0) }, uniquingKeysWith: { a, _ in a }) : [:]
         ScrollViewReader { proxy in
@@ -89,7 +92,7 @@ struct TranscriptEditor: View {
                         .listRowSeparator(.hidden)
                 }
                 ForEach(shown) { s in
-                    sentenceRow(s, speaker: who[s.id], joinAt: joinAt)
+                    sentenceRow(s, speaker: who[s.id], joinAt: joinAt, punctAt: punctAt)
                         .id(s.id)
                         .listRowSeparator(.hidden)
                         .swipeActions(edge: .trailing) {
@@ -331,7 +334,8 @@ struct TranscriptEditor: View {
     }
 
     /// 一句：句首灰色小時間（點了從這句開始播）、說話者名字，接著字一個貼一個排
-    private func sentenceRow(_ s: Sentence, speaker: Int?, joinAt: [Double: ProjectModel.JoinPoint]) -> some View {
+    private func sentenceRow(_ s: Sentence, speaker: Int?, joinAt: [Double: ProjectModel.JoinPoint],
+                             punctAt: [Double: String]) -> some View {
         let here = player.playingID == Self.playAllID && playingSentenceID(s)
         return FlowLayout(spacing: 0, lineSpacing: 6) {
             if let sp = speaker {
@@ -374,7 +378,7 @@ struct TranscriptEditor: View {
                         joinTarget = jp
                     }
                 }
-                WordChip(word: w, playing: i == cur) { model.toggle(w, to: w.action == .cut) }
+                WordChip(word: w, playing: i == cur, punct: punctAt[w.start]) { model.toggle(w, to: w.action == .cut) }
                     .contextMenu { menu(w) }
                     .disabled(model.isBusy)
             }
@@ -499,6 +503,8 @@ private struct TimelineStrip: View {
 struct WordChip: View {
     let word: Word
     let playing: Bool
+    /// 依停頓補上、只顯示用的標點
+    var punct: String? = nil
     let onTap: () -> Void
 
     static func isReviewOrigin(_ w: Word) -> Bool {
@@ -519,7 +525,7 @@ struct WordChip: View {
     }
 
     var body: some View {
-        Text(word.display)
+        Text(word.display + (punct ?? ""))
             .font(.body)
             .underline(word.edited != nil, color: Color.blue)
             .strikethrough(cut, color: Color.red)

@@ -8,6 +8,8 @@ struct TranscriptDocView: View {
     @ObservedObject var model: ProjectModel
     @ObservedObject var player: ClipPlayer
     @AppStorage("transcriptDropFillers") private var dropFillers = true
+    /// 每一句前面都顯示時間（關掉時只有每段開頭有）
+    @AppStorage("transcriptSentenceTimes") private var sentenceTimes = false
     @State private var editing: Word?
     @State private var editText = ""
     @State private var renaming: Int?
@@ -112,6 +114,7 @@ struct TranscriptDocView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 chip("去掉嗯呃", on: dropFillers) { dropFillers.toggle() }
+                chip(sentenceTimes ? "每句時間" : "每段時間", icon: "clock", on: sentenceTimes) { sentenceTimes.toggle() }
                 if !checks.isEmpty {
                     chip("\(checks.count) 個字建議核對 ›", on: false, tint: .orange) {
                         let w = checks[checkCursor % checks.count]
@@ -203,6 +206,21 @@ struct TranscriptDocView: View {
             }
             FlowLayout(spacing: 0, lineSpacing: 8) {
                 ForEach(Array(p.words.enumerated()), id: \.offset) { i, w in
+                    if sentenceTimes && i > 0 && w.seg != p.words[i - 1].seg {
+                        Button {
+                            TranscriptEditor.playAll(model, player, from: max(0, w.start - 0.15), cutOnly: false)
+                        } label: {
+                            Text(ProjectModel.clock(w.start))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(Color.accentColor)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.accentColor.opacity(0.12), in: Capsule())
+                                .padding(.horizontal, 3)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("從 \(ProjectModel.clock(w.start)) 開始播放")
+                    }
                     DocWord(word: w, playing: i == cur, focused: focusWord == w.start)
                         .onTapGesture {
                             editText = w.display

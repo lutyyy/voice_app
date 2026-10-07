@@ -20,6 +20,11 @@ struct ClaudeClient {
         try await send(task.instruction + "\n\n<逐字稿>\n" + transcript + "</逐字稿>")
     }
 
+    /// 一般請求（例如加標點）：直接送出內容
+    func complete(_ content: String) async throws -> String {
+        try await send(content)
+    }
+
     private func send(_ content: String) async throws -> String {
         var req = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
         req.httpMethod = "POST"
