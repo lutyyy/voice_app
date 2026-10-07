@@ -123,13 +123,22 @@ jobs:
           zip -qry VoiceCut-unsigned.ipa Payload
           ls -lh VoiceCut-unsigned.ipa
       - name: 發布新版（SideStore 來源）
-        # 只在本 repo 的分支發布（fork 來的 PR 沒有寫入權限）
+        # 只在本 repo 的分支發布（fork 來的 PR 沒有寫入權限）；PR 上要 commit 訊息含「[發布]」
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         working-directory: ios
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
+          # PR 上的推送只有 commit 訊息含「[發布]」才發新版（避免每次改動都要使用者更新、重新準備模型）；
+          # 手動執行（workflow_dispatch）或推到 main 一律發布
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            msg=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA" --jq .commit.message)
+            case "$msg" in
+              *"[發布]"*) ;;
+              *) echo "commit 訊息沒有「[發布]」，這次不發布（IPA 仍會上傳成 artifact）"; exit 0 ;;
+            esac
+          fi
           cp VoiceCut-unsigned.ipa VoiceCut.ipa
           python3 scripts/make_source.py VoiceCut.ipa "$APP_VERSION" "$APP_BUILD" "$SHA" source.json
           gh release create "build-$APP_BUILD" VoiceCut.ipa source.json \

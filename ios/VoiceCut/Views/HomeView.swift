@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// 首頁：匯入影音檔、專案清單
 struct HomeView: View {
     @EnvironmentObject private var store: ProjectStore
+    @ObservedObject private var transcriber = Transcriber.shared
     @State private var path: [UUID] = []
     @State private var showImporter = false
     @State private var photoItem: PhotosPickerItem?
@@ -24,6 +25,13 @@ struct HomeView: View {
                 Section {
                     newProjectCard
                         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+                if transcriber.prewarming {
+                    Label("App 更新後要重新準備辨識模型，正在背景進行，不用等它", systemImage: "cpu")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }

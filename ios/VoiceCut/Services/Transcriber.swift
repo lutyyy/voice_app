@@ -44,6 +44,25 @@ final class Transcriber: ObservableObject {
     private var loading: (model: String, task: Task<Void, Error>)?
     /// 目前準備好的模型（設定頁顯示用）
     @Published private(set) var readyModel: String?
+    /// App 一打開就在背景準備模型中（首頁顯示提示用）
+    @Published private(set) var prewarming = false
+
+    /// App 打開時在背景先準備模型：只在模型已經下載過、且這個 App 版本還沒準備過時做
+    /// （更新 App 後 iOS 要重新最佳化模型，先做起來，使用者選完檔案時多半已經好了）
+    func prewarm(model: String) {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        let key = "prewarmedBuild." + model
+        guard Self.localFolder(model) != nil, UserDefaults.standard.string(forKey: key) != build,
+              loaded != model, loading == nil else { return }
+        prewarming = true
+        Task {
+            defer { prewarming = false }
+            do {
+                try await load(model: model) { _, _ in }
+                UserDefaults.standard.set(build, forKey: key)
+            } catch {}
+        }
+    }
 
     /// 下載並載入模型。progress 的進度為 nan 時代表無法估計（例如最佳化中）。
     /// 同一個模型正在載入時不會重複載入，等前一次完成即可
