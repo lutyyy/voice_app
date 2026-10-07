@@ -23,6 +23,9 @@ struct RangeSelectView: View {
     @State private var error: String?
     @State private var confirmShort = false
     @State private var playToken: UUID?
+    /// 放大倍率與畫面左緣的時間（放大後只顯示一段，方便微調）
+    @State private var zoom = 1.0
+    @State private var viewStart = 0.0
 
     private var duration: Double { info?.duration ?? 0 }
     private var isWhole: Bool { start < 0.05 && end > duration - 0.05 }
@@ -42,15 +45,22 @@ struct RangeSelectView: View {
                         ProgressView("讀取檔案…").frame(maxWidth: .infinity)
                     } else {
                         summary
-                        RangeWaveform(peaks: peaks, duration: duration, start: $start, end: $end, playhead: playhead)
+                        if zoom > 1.01 {
+                            Overview(peaks: peaks, duration: duration, start: start, end: end,
+                                     viewStart: $viewStart, span: span)
+                                .frame(height: 30)
+                        }
+                        RangeWaveform(peaks: peaks, duration: duration, start: $start, end: $end, playhead: playhead,
+                                      zoom: $zoom, viewStart: $viewStart, maxZoom: maxZoom)
                             .frame(height: 120)
+                        zoomBar
                         if peaks.isEmpty {
                             ProgressView(value: loadProgress) { Text("產生聲波…").font(.caption) }
                         }
                         fineTune
                         preview
                         if firstTime { beforeStart }
-                        Text("拖兩側把手選範圍，拖中間整段移動。只處理選取的部分，長檔案先去掉不要的開頭結尾可以省很多時間。")
+                        Text("拖兩側把手選範圍，拖中間整段移動；兩指捏合或按「放大開頭／結尾」可以放大微調，放大後拖範圍外可以左右捲動。只處理選取的部分，長檔案先去掉不要的開頭結尾可以省很多時間。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -126,6 +136,68 @@ struct RangeSelectView: View {
         }
     }
 
+    /// 畫面上看得到的長度
+    private var span: Double { duration / max(1, zoom) }
+    /// 最多放大到畫面只剩約 2 秒
+    private var maxZoom: Double { max(1, duration / 2) }
+    /// 放大後微調的單位跟著變細
+    private var step: Double { span <= 20 ? 0.1 : 0.5 }
+
+    /// 放大縮小、直接跳到開頭或結尾的把手
+    private var zoomBar: some View {
+        VStack(spacing: 6) {
+            if zoom > 1.01 {
+                HStack {
+                    Text(Self.fine(viewStart))
+                    Spacer()
+                    Text("\(Int(zoom.rounded()))×")
+                        .foregroundStyle(Color.accentColor)
+                    Spacer()
+                    Text(Self.fine(viewStart + span))
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                Button { focus(start) } label: { Label("放大開頭", systemImage: "arrow.left.to.line") }
+                Button { focus(end) } label: { Label("放大結尾", systemImage: "arrow.right.to.line") }
+                Spacer()
+                Button { setZoom(zoom / 2) } label: { Image(systemName: "minus.magnifyingglass") }
+                    .disabled(zoom <= 1.01)
+                    .accessibilityLabel("縮小")
+                Button { setZoom(zoom * 2) } label: { Image(systemName: "plus.magnifyingglass") }
+                    .disabled(zoom >= maxZoom)
+                    .accessibilityLabel("放大")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(info == nil)
+        }
+    }
+
+    /// 放大到約 20 秒寬，並把 t 放在畫面中間
+    private func focus(_ t: Double) {
+        let z = max(zoom, min(maxZoom, duration / 20))
+        withAnimation(.easeInOut(duration: 0.25)) {
+            zoom = z
+            viewStart = Self.clampView(t - duration / z / 2, span: duration / z, duration: duration)
+        }
+    }
+
+    /// 以目前畫面中間為準放大縮小
+    private func setZoom(_ z: Double) {
+        let z = min(maxZoom, max(1, z))
+        let center = viewStart + span / 2
+        withAnimation(.easeInOut(duration: 0.25)) {
+            zoom = z
+            viewStart = Self.clampView(center - duration / z / 2, span: duration / z, duration: duration)
+        }
+    }
+
+    static func clampView(_ v: Double, span: Double, duration: Double) -> Double {
+        min(max(0, v), max(0, duration - span))
+    }
+
     private var fineTune: some View {
         HStack {
             nudge("開始", value: $start, lo: 0, hi: end - 1)
@@ -135,12 +207,14 @@ struct RangeSelectView: View {
     }
 
     private func nudge(_ name: String, value: Binding<Double>, lo: Double, hi: Double) -> some View {
-        HStack(spacing: 4) {
-            Button { value.wrappedValue = max(lo, value.wrappedValue - 0.5) } label: { Image(systemName: "minus") }
-                .accessibilityLabel(name + "提早 0.5 秒")
-            Text(name).font(.caption).foregroundStyle(.secondary)
-            Button { value.wrappedValue = min(hi, value.wrappedValue + 0.5) } label: { Image(systemName: "plus") }
-                .accessibilityLabel(name + "延後 0.5 秒")
+        let d = step
+        let unit = d < 0.5 ? "0.1" : "0.5"
+        return HStack(spacing: 4) {
+            Button { value.wrappedValue = max(lo, value.wrappedValue - d) } label: { Image(systemName: "minus") }
+                .accessibilityLabel(name + "提早 \(unit) 秒")
+            Text("\(name) ±\(unit)s").font(.caption).foregroundStyle(.secondary)
+            Button { value.wrappedValue = min(hi, value.wrappedValue + d) } label: { Image(systemName: "plus") }
+                .accessibilityLabel(name + "延後 \(unit) 秒")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -190,7 +264,8 @@ struct RangeSelectView: View {
                 end = i.duration
             }
             player.replaceCurrentItem(with: AVPlayerItem(asset: AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])))
-            let bins = 320
+            // 每格約 20 毫秒，放大後也看得清楚；很長的檔案限制在 20 萬格
+            let bins = max(320, min(200_000, Int(i.duration * 50)))
             peaks = try await MediaIO.peaks(url, duration: i.duration, bins: bins) { p in
                 Task { @MainActor in loadProgress = p }
             }
@@ -244,17 +319,81 @@ struct RangeSelectView: View {
     }
 }
 
-/// 整檔聲波＋兩個把手；範圍外變暗
+/// 把細的聲波（每格約 20 毫秒）在 [t0, t1) 之間縮成 n 根，每根取最大值
+private func bars(_ peaks: [Float], duration: Double, from t0: Double, to t1: Double, count n: Int) -> [Float] {
+    guard !peaks.isEmpty, duration > 0, n > 0, t1 > t0 else { return [] }
+    let per = Double(peaks.count) / duration
+    var out = [Float](repeating: 0, count: n)
+    for k in 0..<n {
+        let a = t0 + (t1 - t0) * Double(k) / Double(n)
+        let b = t0 + (t1 - t0) * Double(k + 1) / Double(n)
+        let i0 = max(0, min(peaks.count - 1, Int(a * per)))
+        let i1 = max(i0 + 1, min(peaks.count, Int((b * per).rounded(.up))))
+        var m: Float = 0
+        for i in i0..<i1 { m = max(m, peaks[i]) }
+        out[k] = m
+    }
+    return out
+}
+
+/// 放大後的整檔縮圖：框出目前看得到的部分，點或拖可以跳過去
+private struct Overview: View {
+    let peaks: [Float]
+    let duration: Double
+    let start: Double
+    let end: Double
+    @Binding var viewStart: Double
+    let span: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            Canvas { gc, size in
+                let h = size.height
+                let n = max(1, Int(w / 3))
+                let bs = bars(peaks, duration: duration, from: 0, to: duration, count: n)
+                let bw = w / CGFloat(max(1, bs.count))
+                for (i, v) in bs.enumerated() {
+                    let t = (Double(i) + 0.5) / Double(bs.count) * duration
+                    let bh = max(1, CGFloat(v) * h * 0.8)
+                    gc.fill(Path(CGRect(x: CGFloat(i) * bw, y: h / 2 - bh / 2, width: max(1, bw * 0.7), height: bh)),
+                            with: .color(t >= start && t <= end ? Color.accentColor.opacity(0.6) : .secondary.opacity(0.3)))
+                }
+                let x0 = CGFloat(viewStart / duration) * w, x1 = CGFloat((viewStart + span) / duration) * w
+                let r = CGRect(x: x0, y: 0, width: max(4, x1 - x0), height: h)
+                gc.fill(Path(roundedRect: r, cornerRadius: 4), with: .color(.white.opacity(0.12)))
+                gc.stroke(Path(roundedRect: r, cornerRadius: 4), with: .color(.white.opacity(0.8)), lineWidth: 1.5)
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { g in
+                guard w > 0 else { return }
+                let t = Double(g.location.x / w) * duration
+                viewStart = RangeSelectView.clampView(t - span / 2, span: span, duration: duration)
+            })
+        }
+        .accessibilityElement()
+        .accessibilityLabel("整檔縮圖")
+        .accessibilityValue("目前看 \(RangeSelectView.fine(viewStart)) 到 \(RangeSelectView.fine(viewStart + span))")
+    }
+}
+
+/// 聲波＋兩個把手；範圍外變暗。可以兩指捏合放大，放大後拖範圍外左右捲動
 private struct RangeWaveform: View {
     let peaks: [Float]
     let duration: Double
     @Binding var start: Double
     @Binding var end: Double
     let playhead: Double?
+    @Binding var zoom: Double
+    @Binding var viewStart: Double
+    let maxZoom: Double
 
-    private enum Target { case start, end, move, ignore }
+    private enum Target { case start, end, move, pan, ignore }
     @State private var target: Target?
-    @State private var origin = (start: 0.0, end: 0.0)
+    @State private var origin = (start: 0.0, end: 0.0, view: 0.0)
+    @State private var pinchBase: Double?
+
+    private var span: Double { duration / max(1, zoom) }
 
     var body: some View {
         GeometryReader { geo in
@@ -265,6 +404,12 @@ private struct RangeWaveform: View {
                 .gesture(DragGesture(minimumDistance: 8)
                     .onChanged { g in drag(g, width: w) }
                     .onEnded { _ in target = nil })
+                .simultaneousGesture(MagnifyGesture()
+                    .onChanged { g in pinch(g.magnification) }
+                    .onEnded { _ in
+                        pinchBase = nil
+                        target = nil
+                    })
         }
         .accessibilityElement()
         .accessibilityLabel("選取範圍")
@@ -279,10 +424,22 @@ private struct RangeWaveform: View {
         }
     }
 
-    private func x(_ t: Double, _ w: CGFloat) -> CGFloat { duration > 0 ? CGFloat(t / duration) * w : 0 }
+    private func x(_ t: Double, _ w: CGFloat) -> CGFloat { span > 0 ? CGFloat((t - viewStart) / span) * w : 0 }
+
+    /// 以畫面中間為準縮放
+    private func pinch(_ m: CGFloat) {
+        if pinchBase == nil {
+            pinchBase = zoom
+            target = .ignore  // 捏合時不要動到把手
+        }
+        let center = viewStart + span / 2
+        let z = min(maxZoom, max(1, (pinchBase ?? 1) * Double(m)))
+        zoom = z
+        viewStart = RangeSelectView.clampView(center - duration / z / 2, span: duration / z, duration: duration)
+    }
 
     private func drag(_ g: DragGesture.Value, width w: CGFloat) {
-        guard duration > 0, w > 0 else { return }
+        guard duration > 0, w > 0, pinchBase == nil else { return }
         if target == nil {
             let sx = x(start, w), ex = x(end, w), px = g.startLocation.x
             let ds = abs(px - sx), de = abs(px - ex)
@@ -293,13 +450,13 @@ private struct RangeWaveform: View {
             } else if px > sx && px < ex {
                 target = .move
             } else {
-                target = .ignore
+                target = zoom > 1.01 ? .pan : .ignore
             }
-            origin = (start, end)
+            origin = (start, end, viewStart)
         }
         let minLen = min(1, duration)
-        // 用拖曳的位移（不是手指的絕對位置），把手才不會一按就跳
-        let d = Double(g.translation.width / w) * duration
+        // 用拖曳的位移（不是手指的絕對位置），把手才不會一按就跳；放大後同樣的位移代表更短的時間
+        let d = Double(g.translation.width / w) * span
         switch target {
         case .start: start = min(max(0, origin.start + d), end - minLen)
         case .end: end = max(min(duration, origin.end + d), start + minLen)
@@ -308,6 +465,7 @@ private struct RangeWaveform: View {
             let s = min(max(0, origin.start + d), duration - len)
             start = s
             end = s + len
+        case .pan: viewStart = RangeSelectView.clampView(origin.view - d, span: span, duration: duration)
         case .ignore, nil: break
         }
     }
@@ -316,37 +474,44 @@ private struct RangeWaveform: View {
         let w = size.width, h = size.height
         let lane = CGRect(x: 0, y: 14, width: w, height: h - 28)
         let accent = Color.accentColor
-        // 聲波
-        if peaks.isEmpty {
+        // 聲波：只畫看得到的部分，每根約 3 點寬
+        let bs = bars(peaks, duration: duration, from: viewStart, to: viewStart + span, count: max(1, Int(w / 3)))
+        if bs.isEmpty {
             gc.fill(Path(CGRect(x: 0, y: lane.midY - 1, width: w, height: 2)), with: .color(.secondary.opacity(0.4)))
         } else {
-            let n = peaks.count
-            let bw = w / CGFloat(n)
-            for i in 0..<n {
-                let t = (Double(i) + 0.5) / Double(n) * duration
+            let bw = w / CGFloat(bs.count)
+            for (i, v) in bs.enumerated() {
+                let t = viewStart + (Double(i) + 0.5) / Double(bs.count) * span
                 let inside = t >= start && t <= end
-                let bh = max(1.5, CGFloat(peaks[i]) * lane.height)
+                let bh = max(1.5, CGFloat(v) * lane.height)
                 let r = CGRect(x: CGFloat(i) * bw, y: lane.midY - bh / 2, width: max(1, bw * 0.75), height: bh)
                 gc.fill(Path(r), with: .color(inside ? accent.opacity(0.85) : .secondary.opacity(0.35)))
             }
         }
         // 範圍外變暗、範圍框
         let sx = x(start, w), ex = x(end, w)
-        gc.fill(Path(CGRect(x: 0, y: 0, width: sx, height: h)), with: .color(.black.opacity(0.18)))
-        gc.fill(Path(CGRect(x: ex, y: 0, width: w - ex, height: h)), with: .color(.black.opacity(0.18)))
-        gc.stroke(Path(roundedRect: CGRect(x: sx, y: 6, width: ex - sx, height: h - 12), cornerRadius: 6),
+        let csx = min(max(sx, -10), w + 10), cex = min(max(ex, -10), w + 10)
+        if csx > 0 { gc.fill(Path(CGRect(x: 0, y: 0, width: csx, height: h)), with: .color(.black.opacity(0.35))) }
+        if cex < w { gc.fill(Path(CGRect(x: cex, y: 0, width: w - cex, height: h)), with: .color(.black.opacity(0.35))) }
+        gc.stroke(Path(roundedRect: CGRect(x: csx, y: 6, width: max(0, cex - csx), height: h - 12), cornerRadius: 6),
                   with: .color(accent), lineWidth: 2)
-        // 把手
-        for hx in [sx, ex] {
+        // 把手（在畫面內才畫）
+        for hx in [sx, ex] where hx >= -7 && hx <= w + 7 {
             let knob = CGRect(x: hx - 7, y: h / 2 - 22, width: 14, height: 44)
             gc.fill(Path(roundedRect: knob, cornerRadius: 7), with: .color(accent))
             gc.fill(Path(roundedRect: CGRect(x: hx - 1, y: h / 2 - 10, width: 2, height: 20), cornerRadius: 1),
-                    with: .color(.white.opacity(0.9)))
+                    with: .color(.black.opacity(0.6)))
+            // 放大時把手連成一條細線，方便對準聲波
+            if zoom > 1.01 {
+                gc.fill(Path(CGRect(x: hx - 0.5, y: 0, width: 1, height: h)), with: .color(accent.opacity(0.7)))
+            }
         }
         // 試聽位置
         if let p = playhead {
             let px = x(p, w)
-            gc.fill(Path(CGRect(x: px - 1, y: 0, width: 2, height: h)), with: .color(.orange))
+            if px >= 0 && px <= w {
+                gc.fill(Path(CGRect(x: px - 1, y: 0, width: 2, height: h)), with: .color(.orange))
+            }
         }
     }
 }
