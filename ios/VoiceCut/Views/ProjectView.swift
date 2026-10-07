@@ -13,6 +13,7 @@ struct ProjectView: View {
     @State private var showExport = false
     @State private var showSubtitles = false
     @State private var showCutSettings = false
+    @State private var showAsk = false
 
     var body: some View {
         content
@@ -28,6 +29,7 @@ struct ProjectView: View {
             .navigationDestination(isPresented: $showCutSettings) { CutSettingsView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showLog) { LogView(lines: model.log) }
+            .sheet(isPresented: $showAsk) { AskAppSheet(model: model) }
             .sheet(isPresented: $showExport) {
                 ExportSheet(model: model) {
                     // 等匯出畫面收起來再推進下一頁，否則推不進去
@@ -39,7 +41,7 @@ struct ProjectView: View {
                     model.setRange(r, fps: fps)
                 }
             }
-            .alert("提示", isPresented: Binding(get: { model.notice != nil && !showExport },
+            .alert("提示", isPresented: Binding(get: { model.notice != nil && !showExport && !showAsk },
                                               set: { if !$0 { model.notice = nil } })) {
                 Button("好") {}
             } message: {
@@ -202,13 +204,7 @@ struct ProjectView: View {
             } else {
                 Button("設定 Claude API 金鑰…", systemImage: "key") { showSettings = true }
             }
-            Menu("手動貼給 Claude", systemImage: "doc.on.clipboard") {
-                Button("複製逐句稿", systemImage: "doc.on.doc") {
-                    UIPasteboard.general.string = model.sentencesText
-                    model.notice = "已複製。貼給 Claude，再把它的回覆複製回來，點「貼上 Claude 的回覆」。"
-                }
-                Button("貼上 Claude 的回覆", systemImage: "doc.on.clipboard") { pasteReply() }
-            }
+            Button("用 Claude／Gemini App 判斷（用你的訂閱）", systemImage: "arrow.up.forward.app") { showAsk = true }
             if model.meta.deletes != nil {
                 Button("清除 Claude 的判斷", systemImage: "xmark.circle", role: .destructive) { model.clearReply() }
             } else {
@@ -247,18 +243,6 @@ struct ProjectView: View {
     private var rangeTitle: String {
         guard let r = model.meta.range else { return "變更處理範圍" }
         return "處理範圍 \(RangeSelectView.fine(r.start)) – \(RangeSelectView.fine(r.end))"
-    }
-
-    private func pasteReply() {
-        guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            model.notice = "剪貼簿是空的。請先在 Claude 的回覆上按「複製」。"
-            return
-        }
-        do {
-            try model.applyReply(text)
-        } catch {
-            model.notice = error.localizedDescription
-        }
     }
 }
 
@@ -358,6 +342,106 @@ private struct PlayerView: View {
 
     private func reload() {
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
+    }
+}
+
+/// 用 Claude／Gemini App（使用者自己的訂閱）判斷：分享逐字稿過去，複製回覆後回來一鍵貼上
+private struct AskAppSheet: View {
+    @ObservedObject var model: ProjectModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var phase
+    /// 打開這頁時的剪貼簿版本；之後變了代表複製了新東西
+    @State private var baseline = UIPasteboard.general.changeCount
+    /// 已經切到別的 App 過
+    @State private var left = false
+    @State private var hasNew = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    step(1, "傳給 Claude 或 Gemini", done: left) {
+                        Text("分享面板裡選 Claude 或 Gemini App（沒看到就按「拷貝」，再自己打開 App 貼上）。指示已經包含在內容裡，不用另外打字。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        ShareLink(item: model.sentencesText) {
+                            Label("分享逐字稿", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PillButtonStyle(prominent: !left))
+                    }
+                    step(2, "等它回完，按回覆下方的「複製」", done: hasNew) {
+                        Text(hasNew ? "偵測到剪貼簿有新內容。" : "複製後回到這裡。")
+                            .font(.subheadline)
+                            .foregroundStyle(hasNew ? Color.accentColor : .secondary)
+                    }
+                    step(3, "貼上並套用", done: false) {
+                        PasteButton(payloadType: String.self) { strings in
+                            Task { @MainActor in apply(strings.joined(separator: "\n")) }
+                        }
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.large)
+                        .tint(hasNew ? Color.accentColor : Color.white.opacity(0.25))
+                        if let error {
+                            Label(error, systemImage: "exclamationmark.triangle.fill")
+                                .font(.subheadline)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    Text("回覆要包含「版本碼」那一行，App 才能確認它對應的是目前的逐字稿。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            }
+            .navigationTitle("用 Claude／Gemini App 判斷")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+            }
+            .onChange(of: phase) { _, p in
+                if p == .background { left = true }
+                if p == .active { check() }
+            }
+        }
+    }
+
+    /// 讀 changeCount 不會跳出「允許貼上」的詢問
+    private func check() {
+        let pb = UIPasteboard.general
+        hasNew = pb.hasStrings && pb.changeCount != baseline
+    }
+
+    private func apply(_ text: String) {
+        // 貼上的是我們自己送出去的逐字稿（例如在分享面板按了「拷貝」），不是回覆
+        if text.contains("## 第一部分：逐句稿") {
+            error = "剪貼簿裡是逐字稿本身，不是回覆。請在 Claude／Gemini 的回覆下方按「複製」再回來。"
+            return
+        }
+        do {
+            try model.applyReply(text)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func step<C: View>(_ n: Int, _ title: String, done: Bool, @ViewBuilder _ content: () -> C) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle().fill(done ? Color.accentColor : Color.white.opacity(0.12)).frame(width: 28, height: 28)
+                if done {
+                    Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(.black)
+                } else {
+                    Text("\(n)").font(.subheadline.bold())
+                }
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title).font(.headline)
+                content()
+            }
+        }
+        .card()
     }
 }
 
