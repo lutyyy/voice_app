@@ -269,4 +269,14 @@ final class SubtitleTests: XCTestCase {
         Review.mergeShortSentences(&p)
         XCTAssertEqual(p.map(\.seg), [0, 1])
     }
+
+    func testSplitBySpeaker() {
+        var words = [w(0, 0, 1, "你好"), w(0, 1, 2, "請問"), w(0, 2, 3, "好的"), w(1, 4, 5, "謝謝")]
+        Review.splitBySpeaker(&words, speakers: [0, nil, 1, 1])
+        XCTAssertEqual(words.map(\.seg), [0, 0, 1, 2])
+        XCTAssertEqual(Review.sentenceSpeakers(words, speakers: [0, nil, 1, 1]), [0: 0, 1: 1, 2: 1])
+        let text = Review.sentencesText(words, names: [0: "主持人", 1: "來賓"])
+        XCTAssertTrue(text.contains("] 主持人：你好請問"))
+        XCTAssertTrue(text.contains("] 來賓：好的"))
+    }
 }

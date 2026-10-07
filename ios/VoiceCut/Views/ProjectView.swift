@@ -37,8 +37,8 @@ struct ProjectView: View {
                 }
             }
             .sheet(isPresented: $showRange) {
-                RangeSelectView(url: model.sourceURL, initial: model.meta.range, firstTime: model.needsRange) { r, fps in
-                    model.setRange(r, fps: fps)
+                RangeSelectView(url: model.sourceURL, initial: model.meta.range, firstTime: model.needsRange) { r, fps, n in
+                    model.setRange(r, fps: fps, speakers: n)
                 }
             }
             .alert("提示", isPresented: Binding(get: { model.notice != nil && !showExport && !showAsk },

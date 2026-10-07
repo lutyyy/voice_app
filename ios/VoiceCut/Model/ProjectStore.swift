@@ -25,6 +25,8 @@ struct ProjectMeta: Codable, Identifiable, Equatable {
     var rangeChosen: Bool?
     /// 說話者自訂名稱（依編號）
     var speakerNames: [String]?
+    /// 開始前選的說話人數：nil 或 1 = 一個人（不辨識說話者）、0 = 自動判斷、2 以上 = 指定人數
+    var speakers: Int?
 
     var displayName: String { (name as NSString).deletingPathExtension }
 }

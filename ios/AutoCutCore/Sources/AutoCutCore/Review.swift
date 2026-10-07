@@ -100,10 +100,40 @@ public enum Review {
         for i in words.indices { words[i].seg = newID[words[i].seg] ?? words[i].seg }
     }
 
+    /// 同一句裡換人說話時切開（speakers 與 words 一一對應，nil = 不確定，沿用前一個字），句子重新編號
+    public static func splitBySpeaker(_ words: inout [Word], speakers: [Int?]) {
+        guard speakers.count == words.count else { return }
+        var id = -1
+        var prevSeg: Int?
+        var cur: Int?
+        for i in words.indices {
+            let sp = speakers[i] ?? cur
+            if words[i].seg != prevSeg || (sp != nil && cur != nil && sp != cur) {
+                id += 1
+            }
+            prevSeg = words[i].seg
+            cur = sp
+            words[i].seg = id
+        }
+    }
+
+    /// 每句的說話者（句中字數最多的人）
+    public static func sentenceSpeakers(_ words: [Word], speakers: [Int?]) -> [Int: Int] {
+        guard speakers.count == words.count else { return [:] }
+        var tally: [Int: [Int: Int]] = [:]
+        for (w, sp) in zip(words, speakers) {
+            guard let sp, w.action != .cut else { continue }
+            tally[w.seg, default: [:]][sp, default: 0] += 1
+        }
+        return tally.mapValues { $0.max { $0.value < $1.value }!.key }
+    }
+
     /// 給 Claude 的完整文字：指令＋第一部分逐句稿＋第二部分疑似贅詞
-    public static func sentencesText(_ words: [Word]) -> String {
+    /// names：句子編號 → 說話者名稱（有辨識說話者時，讓 Claude 分得出誰在附和誰）
+    public static func sentencesText(_ words: [Word], names: [Int: String]? = nil) -> String {
         let lines = sentences(words).map {
-            "S" + pad3($0.id) + " [" + String(formatTime($0.start).prefix(8)) + "] " + $0.text
+            "S" + pad3($0.id) + " [" + String(formatTime($0.start).prefix(8)) + "] "
+                + (names?[$0.id].map { $0 + "：" } ?? "") + $0.text
         }
         let shown = words.filter { $0.action != .cut }
         var rlines: [String] = []

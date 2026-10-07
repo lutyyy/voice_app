@@ -8,7 +8,8 @@ struct RangeSelectView: View {
     let initial: ClipRange?
     /// 第一次選（新匯入的檔案）：沒有「取消」，只能用整段或選好範圍
     let firstTime: Bool
-    let onDone: (ClipRange?, Double?) -> Void
+    /// 範圍、影格率、說話人數（只有第一次選時有：1 = 一個人、0 = 自動、2 以上 = 指定）
+    let onDone: (ClipRange?, Double?, Int?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var info: MediaInfo?
@@ -25,6 +26,7 @@ struct RangeSelectView: View {
     @State private var playToken: UUID?
     /// 放大倍率與畫面左緣的時間（放大後只顯示一段，方便微調）
     @State private var zoom = 1.0
+    @State private var speakers = 1
     @State private var viewStart = 0.0
 
     private var duration: Double { info?.duration ?? 0 }
@@ -223,7 +225,17 @@ struct RangeSelectView: View {
     /// 開始辨識前的設定：速度（決定辨識模型，之後要改得重新辨識）與剪輯風格（之後隨時可以改）
     private var beforeStart: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("處理速度").font(.subheadline.weight(.semibold))
+            Text("幾個人說話").font(.subheadline.weight(.semibold))
+            Picker("幾個人說話", selection: $speakers) {
+                Text("1 人").tag(1)
+                Text("2 人").tag(2)
+                Text("3 人").tag(3)
+                Text("更多").tag(0)
+            }
+            .pickerStyle(.segmented)
+            Text(speakers == 1 ? "單人口說、Vlog。" : "訪談、對談、會議：逐字稿會標出誰在說話（第一次要下載語者辨識模型，請連 Wi‑Fi）。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("處理速度").font(.subheadline.weight(.semibold)).padding(.top, 4)
             SpeedPicker()
             Text("越慢越準；之後要換得重新辨識。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -307,7 +319,7 @@ struct RangeSelectView: View {
 
     private func finish(_ r: ClipRange?) {
         stop()
-        onDone(r, info?.fps)
+        onDone(r, info?.fps, firstTime ? speakers : nil)
         dismiss()
     }
 

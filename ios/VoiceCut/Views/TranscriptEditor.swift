@@ -10,6 +10,8 @@ struct TranscriptEditor: View {
     @State private var editing: Word?
     @State private var editText = ""
     @State private var toast: String?
+    @State private var renaming: Int?
+    @State private var renameText = ""
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "全部", cuts = "有剪的", review = "疑似贅詞", manual = "手動改過"
@@ -56,6 +58,7 @@ struct TranscriptEditor: View {
         let words = model.decided
         let all = Self.sentences(words)
         let shown = visible(all)
+        let who = model.sentenceSpeaker
         ScrollViewReader { proxy in
             List {
                 Section {
@@ -82,7 +85,7 @@ struct TranscriptEditor: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(shown) { s in
-                    sentenceRow(s)
+                    sentenceRow(s, speaker: who[s.id])
                         .id(s.id)
                         .swipeActions(edge: .trailing) {
                             Button {
@@ -105,6 +108,15 @@ struct TranscriptEditor: View {
             .listStyle(.plain)
         }
         .searchable(text: $query, prompt: "搜尋逐字稿")
+        .alert("說話者名稱", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField(renaming.map { "說話者 \($0 + 1)" } ?? "", text: $renameText)
+            Button("儲存") {
+                if let i = renaming { model.renameSpeaker(i, to: renameText.trimmingCharacters(in: .whitespaces)) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("例如：主持人、來賓。逐字稿、字幕和給 Claude 的內容都會用這個名字。")
+        }
         .alert("修改文字", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
             TextField("正確的文字", text: $editText)
             Button("儲存") {
@@ -204,10 +216,24 @@ struct TranscriptEditor: View {
     }
 
     @ViewBuilder
-    private func sentenceRow(_ s: Sentence) -> some View {
+    private func sentenceRow(_ s: Sentence, speaker: Int?) -> some View {
         let srcID = "src\(s.id)", outID = "out\(s.id)"
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
+                if let sp = speaker {
+                    Button {
+                        renameText = model.meta.speakerNames.flatMap { sp < $0.count ? $0[sp] : nil } ?? ""
+                        renaming = sp
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle().fill(ExportView.color(sp)).frame(width: 8, height: 8)
+                            Text(model.speakerName(sp))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ExportView.color(sp))
+                        }
+                    }
+                    .accessibilityHint("點兩下改名字")
+                }
                 Text(String(format: "S%03d · %@", s.id, ProjectModel.clock(s.start)))
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)

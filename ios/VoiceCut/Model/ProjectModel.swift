@@ -182,8 +182,9 @@ final class ProjectModel: ObservableObject {
     var needsRange: Bool { meta.rangeChosen == false }
 
     /// 選好範圍（nil = 整個檔案）：之前的辨識結果都作廢，從頭處理
-    func setRange(_ r: ClipRange?, fps: Double?) {
+    func setRange(_ r: ClipRange?, fps: Double?, speakers: Int? = nil) {
         guard !isBusy else { return }
+        if let speakers { meta.speakers = speakers }
         var r = r
         if var x = r, let fps, fps > 0 {  // 影片：開頭對齊影格，畫面才不會差一格
             x.start = (x.start * fps).rounded(.down) / fps
@@ -224,11 +225,13 @@ final class ProjectModel: ObservableObject {
         var list = [("decode", "解碼音訊"), ("analyze", "分析音量與人聲"), ("model", "準備辨識模型"), ("asr", "語音辨識")]
         if settings.gapFill { list.append(("gaps", "檢查漏字")) }
         list.append(("plan", "標記要剪的地方"))
+        if wantsSpeakers && speakerTurns.isEmpty { list.append(("diarize", "辨識說話者")) }
         setSteps(list)
         run { [self] in
             try await ensureAnalysis()
             let a = analysis!
             var words: [Word]
+            var audio16: [Float]?
             if let cached = try? load([Word].self, "words.json") {
                 words = cached
             } else {
@@ -237,6 +240,7 @@ final class ProjectModel: ObservableObject {
                 let audio = try await MediaIO.decode16k(sourceURL, range: meta.range) { p in
                     Task { @MainActor in self.progress = p }
                 }
+                audio16 = audio
                 let model = settings.resolvedModel
                 try await Transcriber.shared.load(model: model) { p, s in
                     Task { @MainActor in self.report(p, s) }
@@ -260,11 +264,28 @@ final class ProjectModel: ObservableObject {
             say("標記要剪的地方…")
             let input = words
             let opts = settings.planOptions
-            let p = await offMain {
+            var p = await offMain {
                 var p = Planner.plan(input, speech: a.speech, options: opts)
                 Review.mergeShortSentences(&p)
                 return p
             }
+            if wantsSpeakers && speakerTurns.isEmpty {
+                enter("diarize")
+                say("辨識說話者（第一次會下載模型）…", 0)
+                let audio: [Float]
+                if let audio16 {
+                    audio = audio16
+                } else {
+                    audio = try await MediaIO.decode16k(sourceURL, range: meta.range) { _ in }
+                }
+                let n = meta.speakers ?? 0
+                speakerTurns = try await Diarizer.run(audio, speakers: n >= 2 ? n : nil) { p in
+                    Task { @MainActor in self.progress = p }
+                }
+                try save(speakerTurns, "speakers.json")
+                log.append("辨識出 \(speakerCount) 位說話者")
+            }
+            p = withSpeakers(p)
             plan = p
             try save(p, "plan.json")
             meta.planOptions = opts
@@ -315,6 +336,7 @@ final class ProjectModel: ObservableObject {
             Review.mergeShortSentences(&p)
             return p
         }
+        p = withSpeakers(p)
         let manual = Self.manualMarks(old)
         Self.forEachKey(p) { i, key in
             if let m = manual[key] {
@@ -443,7 +465,9 @@ final class ProjectModel: ObservableObject {
 
     // MARK: - Claude 判斷
 
-    var sentencesText: String { Review.sentencesText(plan) }
+    var sentencesText: String {
+        Review.sentencesText(plan, names: speakerTurns.isEmpty ? nil : sentenceSpeaker.mapValues { speakerName($0) })
+    }
 
     /// 目前生效的刪除清單（版本碼不符時為 nil，並顯示提示）
     var deletes: Review.Deletes? {
@@ -711,6 +735,22 @@ final class ProjectModel: ObservableObject {
 
     var speakerCount: Int { Set(speakerTurns.map(\.speaker)).count }
 
+    /// 開始前選了不只一個人（或自動判斷）
+    var wantsSpeakers: Bool { (meta.speakers ?? 1) != 1 }
+
+    /// 每句是誰說的（句子編號 → 說話者編號）；沒有辨識說話者時是空的
+    var sentenceSpeaker: [Int: Int] {
+        speakerTurns.isEmpty ? [:] : Review.sentenceSpeakers(plan, speakers: Subtitles.speakers(for: plan, turns: speakerTurns))
+    }
+
+    /// 同一句裡換人說話時切開
+    private func withSpeakers(_ p: [Word]) -> [Word] {
+        guard !speakerTurns.isEmpty else { return p }
+        var q = p
+        Review.splitBySpeaker(&q, speakers: Subtitles.speakers(for: q, turns: speakerTurns))
+        return q
+    }
+
     func speakerName(_ i: Int) -> String {
         if let n = meta.speakerNames, i < n.count, !n[i].trimmingCharacters(in: .whitespaces).isEmpty { return n[i] }
         return "說話者 \(i + 1)"
@@ -742,6 +782,11 @@ final class ProjectModel: ObservableObject {
             speakerTurns = turns
             try save(turns, "speakers.json")
             log.append("辨識出 \(speakerCount) 位說話者")
+            // 換人說話的地方切成不同句；已有 Claude 的判斷時不動（句子編號會對不上）
+            if meta.deletes == nil {
+                plan = withSpeakers(plan)
+                try save(plan, "plan.json")
+            }
         }
     }
 
