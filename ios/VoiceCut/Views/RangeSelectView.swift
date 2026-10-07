@@ -50,7 +50,7 @@ struct RangeSelectView: View {
                         fineTune
                         preview
                         if firstTime { beforeStart }
-                        Text("拖曳兩側的把手選擇範圍，拖中間可以整段移動。只會辨識與輸出選取的部分，長檔案先剪掉不需要的開頭結尾可以省下很多時間。")
+                        Text("拖兩側把手選範圍，拖中間整段移動。只處理選取的部分，長檔案先去掉不要的開頭結尾可以省很多時間。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -66,11 +66,9 @@ struct RangeSelectView: View {
                     }
                 } label: {
                     Text(isWhole ? "處理整個檔案" : "處理選取的 \(ProjectModel.clock(end - start))")
-                        .font(.headline)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PillButtonStyle())
                 .disabled(info == nil)
                 .padding()
                 .background(.bar)
@@ -151,18 +149,16 @@ struct RangeSelectView: View {
     /// 開始辨識前的設定：速度（決定辨識模型，之後要改得重新辨識）與剪輯風格（之後隨時可以改）
     private var beforeStart: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("開始前的設定").font(.headline)
-            Text("處理速度").font(.subheadline)
+            Text("處理速度").font(.subheadline.weight(.semibold))
             SpeedPicker()
-            Text("決定用哪個辨識模型；越慢越準。之後要換得重新辨識。")
+            Text("越慢越準；之後要換得重新辨識。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("剪輯風格").font(.subheadline).padding(.top, 4)
+            Text("剪輯風格").font(.subheadline.weight(.semibold)).padding(.top, 4)
             PresetPicker()
-            Text("剪多剪少，處理完後也可以隨時改，不用重新辨識。")
+            Text("處理完也可以隨時換。")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .padding()
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .card()
     }
 
     private var preview: some View {

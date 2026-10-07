@@ -53,7 +53,7 @@ struct ExportView: View {
             }
             .pickerStyle(.segmented)
             if base == .output && !model.outputFresh {
-                Label("還沒有輸出，或標記改過了。先按「輸出剪好的檔案」，字幕才能對齊成品；現在會先用原始檔案的時間。",
+                Label("還沒有輸出，或標記改過了。先按「匯出」，字幕才能對齊成品；現在會先用原始檔案的時間。",
                       systemImage: "exclamationmark.circle")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -69,7 +69,7 @@ struct ExportView: View {
         } header: {
             Text("匯出")
         } footer: {
-            Text("只包含保留下來的字（剪掉的語助詞、重講不會出現）。SRT／VTT 可以匯入 YouTube、CapCut、Premiere 等；對齊剪好的檔案時，字幕時間和成品一致。錯字可以在「檢視／修改逐字稿」長按字修改。")
+            Text("只包含保留下來的字（剪掉的語助詞、重講不會出現）。SRT／VTT 可以匯入 YouTube、CapCut、Premiere 等；對齊剪好的檔案時，字幕時間和成品一致。錯字可以在逐字稿長按字修改。")
         }
     }
 

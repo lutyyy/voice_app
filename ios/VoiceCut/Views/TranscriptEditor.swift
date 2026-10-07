@@ -1,10 +1,9 @@
 import AutoCutCore
 import SwiftUI
 
-/// 逐字稿編輯：聲波時間軸、試聽、篩選、整句滑動、同字批次、復原、搜尋、修正錯字
-struct TranscriptView: View {
+/// 逐字稿編輯器（專案頁的主畫面）：聲波時間軸、試聽、篩選、整句滑動、同字批次、搜尋、修正錯字
+struct TranscriptEditor: View {
     @ObservedObject var model: ProjectModel
-    @EnvironmentObject private var settings: AppSettings
     @StateObject private var player = ClipPlayer()
     @State private var filter: Filter = .all
     @State private var query = ""
@@ -37,17 +36,19 @@ struct TranscriptView: View {
         return out
     }
 
+    private static func matches(_ f: Filter, _ s: Sentence) -> Bool {
+        switch f {
+        case .all: return true
+        case .cuts: return s.words.contains { $0.action == .cut }
+        case .review: return s.words.contains { WordChip.isReviewOrigin($0) }
+        case .manual: return s.words.contains { $0.reason.hasPrefix("手動") || $0.edited != nil }
+        }
+    }
+
     private func visible(_ all: [Sentence]) -> [Sentence] {
         let q = query.trimmingCharacters(in: .whitespaces)
         return all.filter { s in
-            let pass: Bool
-            switch filter {
-            case .all: pass = true
-            case .cuts: pass = s.words.contains { $0.action == .cut }
-            case .review: pass = s.words.contains { WordChip.isReviewOrigin($0) }
-            case .manual: pass = s.words.contains { $0.reason.hasPrefix("手動") || $0.edited != nil }
-            }
-            return pass && (q.isEmpty || s.text.localizedCaseInsensitiveContains(q))
+            Self.matches(filter, s) && (q.isEmpty || s.text.localizedCaseInsensitiveContains(q))
         }
     }
 
@@ -70,12 +71,11 @@ struct TranscriptView: View {
                     }
                     .frame(height: 56)
                     .listRowSeparator(.hidden)
-                    Picker("篩選", selection: $filter) {
-                        ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowSeparator(.hidden)
-                    legend
+                    stats(words)
+                        .listRowSeparator(.hidden)
+                    chips(all)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets())
                 }
                 if shown.isEmpty {
                     Text(query.isEmpty ? "沒有符合的句子" : "找不到「\(query)」")
@@ -105,18 +105,6 @@ struct TranscriptView: View {
             .listStyle(.plain)
         }
         .searchable(text: $query, prompt: "搜尋逐字稿")
-        .navigationTitle("逐字稿")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                    .disabled(model.undoStack.isEmpty || model.isBusy)
-                    .accessibilityLabel("復原")
-                Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                    .disabled(model.redoStack.isEmpty || model.isBusy)
-                    .accessibilityLabel("重做")
-            }
-        }
         .alert("修改文字", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
             TextField("正確的文字", text: $editText)
             Button("儲存") {
@@ -146,17 +134,73 @@ struct TranscriptView: View {
         .onDisappear { player.stop() }
     }
 
-    private var legend: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                WordChip(word: Word(seg: 0, start: 0, end: 0, text: "保留"), playing: false, onTap: {}).allowsHitTesting(false)
-                WordChip(word: Word(seg: 0, start: 0, end: 0, text: "剪掉", action: .cut), playing: false, onTap: {}).allowsHitTesting(false)
-                WordChip(word: Word(seg: 0, start: 0, end: 0, text: "疑似贅詞", reason: "疑似贅詞"), playing: false, onTap: {}).allowsHitTesting(false)
+    /// 原長 → 預估剪後、剪了幾處、Claude 是否已判斷
+    private func stats(_ words: [Word]) -> some View {
+        let total = model.meta.info?.duration ?? (words.last?.end ?? 0)
+        let cuts = Self.cutSpans(words).count
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let e = model.estimate {
+                    Text("\(ProjectModel.clock(total)) → \(ProjectModel.clock(e))")
+                        .font(.title3.monospacedDigit().bold())
+                        .contentTransition(.numericText())
+                        .animation(.default, value: e)
+                    Text("−\(Int(((1 - e / max(total, 0.01)) * 100).rounded()))%")
+                        .font(.subheadline.monospacedDigit().bold())
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text(ProjectModel.clock(total)).font(.title3.monospacedDigit().bold())
+                }
+                Spacer()
+                Text("剪 \(cuts) 處").font(.subheadline).foregroundStyle(.secondary)
             }
-            Text("點字切換保留／剪掉；長按字可以試聽、改錯字、把同樣的字一起剪。句子向左滑整句剪掉、向右滑整句保留。點上方聲波跳到該處。")
+            if model.meta.deletes != nil {
+                if let d = model.deletes {
+                    Label("Claude 已判斷：刪 \(d.sentences.count) 句、\(d.reviews.count) 個贅詞", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Label("Claude 的回覆和目前的逐字稿對不上，沒有套用", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Text("點字切換剪／留 · 長按試聽或改字 · 左右滑整句")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// 篩選：膠囊按鈕，後面是句數
+    private func chips(_ all: [Sentence]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Filter.allCases) { f in
+                    let n = count(f, all)
+                    Button {
+                        filter = f
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(f.rawValue)
+                            if f != .all { Text("\(n)").monospacedDigit().opacity(0.7) }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .foregroundStyle(filter == f ? Color.black : Color.primary)
+                        .background(filter == f ? Color.accentColor : Color.white.opacity(0.1), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(filter == f ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private func count(_ f: Filter, _ all: [Sentence]) -> Int {
+        all.filter { Self.matches(f, $0) }.count
     }
 
     @ViewBuilder

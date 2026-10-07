@@ -11,42 +11,22 @@ struct HomeView: View {
     @State private var showSettings = false
     @State private var importing = false
     @State private var error: String?
+    @State private var showDriveHelp = false
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                Section {
-                    Button {
-                        showImporter = true
-                    } label: {
-                        Label("從「檔案」選擇（含 Google 雲端硬碟、iCloud）", systemImage: "folder")
-                    }
-                    PhotosPicker(selection: $photoItem, matching: .videos) {
-                        Label("從「照片」選擇影片", systemImage: "photo.on.rectangle")
-                    }
-                } footer: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("自動剪掉語助詞（嗯、呃、欸…）、口吃重複、過長的停頓與停頓中的呼吸聲。辨識與剪輯都在 iPhone 上完成。")
-                        Text("Google 雲端硬碟：在選檔畫面點右下角「瀏覽」，再選「Drive」。看不到的話，先安裝並登入「Google 雲端硬碟」App，再到「瀏覽」右上角「⋯ › 編輯」把 Drive 打開。")
-                    }
-                }
-
                 if importing {
-                    HStack {
+                    HStack(spacing: 10) {
                         ProgressView()
                         Text("匯入中…（雲端檔案會先下載）").foregroundStyle(.secondary)
                     }
                 }
-
-                if !store.projects.isEmpty {
-                    Section("專案") {
-                        ForEach(store.projects) { p in
-                            NavigationLink(value: p.id) { ProjectRow(meta: p) }
-                        }
-                        .onDelete { idx in
-                            for i in idx { store.delete(store.projects[i]) }
-                        }
-                    }
+                ForEach(store.projects) { p in
+                    NavigationLink(value: p.id) { ProjectRow(meta: p) }
+                }
+                .onDelete { idx in
+                    for i in idx { store.delete(store.projects[i]) }
                 }
             }
             .navigationTitle("語音剪輯")
@@ -59,6 +39,18 @@ struct HomeView: View {
                     }
                     .accessibilityLabel("設定")
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Menu {
+                    Button("從「檔案」選擇", systemImage: "folder") { showImporter = true }
+                    PhotosPicker(selection: $photoItem, matching: .videos) {
+                        Label("從「照片」選影片", systemImage: "photo.on.rectangle")
+                    }
+                } label: {
+                    PillLabel(title: "新增專案", icon: "plus")
+                }
+                .disabled(importing)
+                .padding(.bottom, 8)
             }
             .navigationDestination(for: UUID.self) { id in
                 if let meta = store.projects.first(where: { $0.id == id }) {
@@ -98,14 +90,21 @@ struct HomeView: View {
             } message: {
                 Text(error ?? "")
             }
+            .alert("從 Google 雲端硬碟匯入", isPresented: $showDriveHelp) {
+                Button("好") {}
+            } message: {
+                Text("點「新增專案 › 從「檔案」選擇」，在右下角「瀏覽」選「Drive」。看不到的話，先安裝並登入「Google 雲端硬碟」App，再到「瀏覽」右上角「⋯ › 編輯」把 Drive 打開。")
+            }
             .overlay {
                 if store.projects.isEmpty && !importing {
                     ContentUnavailableView {
-                        Label("還沒有專案", systemImage: "waveform.badge.minus")
+                        Label("剪掉嗯、呃和停頓", systemImage: "waveform.badge.minus")
                     } description: {
-                        Text("選一個訪談、Podcast 或口說影片開始")
+                        Text("匯入訪談、Podcast 或口說影片，自動剪掉語助詞、口吃與過長的停頓。全程在 iPhone 上處理。")
+                    } actions: {
+                        Button("怎麼從 Google 雲端硬碟匯入？") { showDriveHelp = true }
+                            .font(.footnote)
                     }
-                    .padding(.top, 220)
                 }
             }
         }
@@ -129,22 +128,35 @@ private struct ProjectRow: View {
     let meta: ProjectMeta
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             Image(systemName: meta.info?.isVideo == true ? "film" : "waveform")
-                .font(.title3)
-                .foregroundStyle(.tint)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(meta.displayName).lineLimit(1)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.black)
+                .frame(width: 46, height: 46)
+                .background(LinearGradient(colors: [Color.accentColor, Color.accentColor.opacity(0.55)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(meta.displayName).font(.body.weight(.medium)).lineLimit(1)
                 HStack(spacing: 6) {
                     Text(meta.created, format: .dateTime.month().day().hour().minute())
                     if let d = meta.info?.duration { Text("· " + ProjectModel.clock(d)) }
-                    if let o = meta.outputDuration, !meta.outputStale { Text("→ " + ProjectModel.clock(o)) }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 4)
+            if let o = meta.outputDuration, !meta.outputStale, let d = meta.info?.duration, d > 0 {
+                Text("−\(Int(((1 - o / d) * 100).rounded()))%")
+                    .font(.caption.monospacedDigit().bold())
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    .accessibilityLabel("剪後 \(ProjectModel.clock(o))")
+            }
         }
+        .padding(.vertical, 4)
     }
 }
 

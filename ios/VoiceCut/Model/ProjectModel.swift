@@ -610,8 +610,7 @@ final class ProjectModel: ObservableObject {
             meta.outputStale = false
             saveMeta()
             if let info = meta.info, let d = meta.outputDuration {
-                notice = "完成！原長 \(Self.clock(info.duration)) → 剪後 \(Self.clock(d))，省下 \(Self.clock(info.duration - d))"
-                log.append(notice!)
+                log.append("完成！原長 \(Self.clock(info.duration)) → 剪後 \(Self.clock(d))，省下 \(Self.clock(info.duration - d))")
             }
         }
     }

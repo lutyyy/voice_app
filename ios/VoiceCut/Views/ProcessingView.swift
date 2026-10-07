@@ -44,7 +44,7 @@ struct ProcessingCard: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            Text("處理時請讓 App 保持在前景、不要鎖定螢幕。")
+            Text("iOS 26 以上可以切到背景，完成會通知；較舊的 iOS 請保持在前景。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button("取消", role: .destructive) { model.cancel() }
