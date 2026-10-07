@@ -102,6 +102,23 @@ final class ProjectStore: ObservableObject {
         return meta
     }
 
+    /// 已經開過的專案模型（首頁顯示處理進度用）；沒開過就是 nil
+    func existingModel(_ id: UUID) -> ProjectModel? { models[id] }
+
+    /// 改名：保留原本的副檔名；專案開著時改模型裡的那份，避免之後存檔蓋回舊名字
+    func rename(_ meta: ProjectMeta, to newName: String) {
+        let ext = (meta.name as NSString).pathExtension
+        let name = ext.isEmpty ? newName : newName + "." + ext
+        if let m = models[meta.id] {
+            m.meta.name = name
+            try? save(m.meta)
+        } else {
+            var meta = meta
+            meta.name = name
+            try? save(meta)
+        }
+    }
+
     func save(_ meta: ProjectMeta) throws {
         let data = try JSONEncoder.iso.encode(meta)
         try data.write(to: Self.folder(meta.id).appendingPathComponent("meta.json"), options: .atomic)

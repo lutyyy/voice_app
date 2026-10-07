@@ -17,6 +17,7 @@ struct ProjectView: View {
     @State private var showCutSettings = false
     @State private var showAsk = false
     @State private var discard = false
+    @State private var confirmCancel = false
 
     var body: some View {
         content
@@ -25,6 +26,17 @@ struct ProjectView: View {
             .toolbar {
                 if !model.plan.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) { aiMenu }
+                }
+                if model.plan.isEmpty && model.isBusy {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("取消") { confirmCancel = true }
+                            .confirmationDialog("停止處理？", isPresented: $confirmCancel, titleVisibility: .visible) {
+                                Button("停止處理", role: .destructive) { model.cancel() }
+                                Button("繼續處理", role: .cancel) {}
+                            } message: {
+                                Text("之後可以再按「開始處理」重新開始。")
+                            }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) { moreMenu }
             }
@@ -71,7 +83,9 @@ struct ProjectView: View {
 
     @ViewBuilder
     private var content: some View {
-        if model.plan.isEmpty {
+        if model.plan.isEmpty && model.stage == .working {
+            ProcessingHero(model: model)
+        } else if model.plan.isEmpty {
             ScrollView {
                 VStack(spacing: 16) {
                     status

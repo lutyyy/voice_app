@@ -52,7 +52,9 @@ struct ProcessingCard: View {
         .padding(.vertical, 6)
     }
 
-    private var title: String {
+    private var title: String { Self.title(model) }
+
+    static func title(_ model: ProjectModel) -> String {
         switch model.steps.first(where: { $0.state == .running })?.id {
         case "decode", "analyze": return "聲波分析中"
         case "model": return model.step == Transcriber.downloading ? "下載辨識模型" : "準備辨識模型"
@@ -66,7 +68,9 @@ struct ProcessingCard: View {
     }
 
     /// 說清楚是在下載還是在最佳化，以及大概要多久
-    private var optimizeNote: String {
+    private var optimizeNote: String { Self.optimizeNote(model) }
+
+    static func optimizeNote(_ model: ProjectModel) -> String {
         var s = model.step == Transcriber.optimizing
             ? "模型已下載完成，iPhone 正在把它最佳化給神經網路引擎，第一次約需 2～10 分鐘，期間進度可能不動。"
             : "模型檔已在手機上，沒有重新下載。剛更新 App 或重新開機後，iOS 可能要重新最佳化一次（這是系統的規定，App 無法跳過）；沒有的話幾秒就好。"
@@ -240,5 +244,126 @@ private struct StepList: View {
         case .running: return "進行中"
         case .pending: return "等待中"
         }
+    }
+}
+
+/// 專案頁處理中的全畫面：大進度圈＋第幾步、約剩多久，其餘空間給即時逐字稿；步驟清單收在「詳細」
+struct ProcessingHero: View {
+    @ObservedObject var model: ProjectModel
+    @State private var showSteps = false
+
+    var body: some View {
+        VStack(spacing: 18) {
+            ProgressRing(progress: model.progress)
+                .frame(width: 150, height: 150)
+                .padding(.top, 12)
+            VStack(spacing: 4) {
+                Text(ProcessingCard.title(model)).font(.title3.weight(.bold))
+                TimelineView(.periodic(from: model.stepStarted, by: 1)) { ctx in
+                    Text(subtitle(ctx.date))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Button(showSteps ? "收起步驟" : "詳細") {
+                    withAnimation(.spring(duration: 0.3)) { showSteps.toggle() }
+                }
+                .font(.footnote.weight(.semibold))
+                .padding(.top, 2)
+            }
+            if showSteps {
+                StepList(steps: model.steps)
+                    .padding()
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            if Transcriber.isOptimizing(model.step) {
+                Text(ProcessingCard.optimizeNote(model))
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            }
+            HeroTranscript(lines: model.liveLines)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .clipped()
+                .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.4)],
+                                     startPoint: .top, endPoint: .bottom))
+            Label("可以切到背景，完成會通知", systemImage: "bell.badge")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+    }
+
+    /// 「第 3 步，共 5 步 · 約剩 2 分鐘」
+    private func subtitle(_ now: Date) -> String {
+        var parts: [String] = []
+        if let i = model.steps.firstIndex(where: { $0.state == .running }) {
+            parts.append("第 \(i + 1) 步，共 \(model.steps.count) 步")
+        }
+        if let eta = model.eta(at: now) {
+            parts.append(eta < 60 ? "不到 1 分鐘" : "約剩 " + ProjectModel.clock(eta))
+        } else {
+            parts.append("已經過 " + ProjectModel.clock(now.timeIntervalSince(model.stepStarted)))
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// 大進度圈：有進度顯示百分比，沒有就轉圈
+private struct ProgressRing: View {
+    let progress: Double?
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.1), lineWidth: 12)
+            if let p = progress {
+                Circle()
+                    .trim(from: 0, to: max(0.01, p))
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeOut(duration: 0.4), value: p)
+                Text("\(Int(p * 100))%")
+                    .font(.system(size: 36, weight: .bold, design: .rounded).monospacedDigit())
+                    .contentTransition(.numericText())
+                    .animation(.default, value: Int(p * 100))
+            } else {
+                TimelineView(.animation) { ctx in
+                    let a = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360
+                    Circle()
+                        .trim(from: 0, to: 0.22)
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                        .rotationEffect(.degrees(a - 90))
+                }
+                Image(systemName: "waveform")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .symbolEffect(.variableColor.iterative)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel(progress.map { "進度 \(Int($0 * 100))%" } ?? "處理中")
+    }
+}
+
+/// 即時逐字稿：新的句子從下面長出來，越舊越淡，上緣淡出
+private struct HeroTranscript: View {
+    let lines: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(lines.enumerated()), id: \.element) { k, line in
+                let age = lines.count - 1 - k
+                Text(line)
+                    .font(age == 0 ? .title3.weight(.medium) : .body)
+                    .foregroundStyle(age == 0 ? Color.primary : Color.secondary.opacity(max(0.35, 1 - Double(age) * 0.18)))
+                    .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.35), value: lines)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("即時逐字稿：" + (lines.last ?? ""))
     }
 }
