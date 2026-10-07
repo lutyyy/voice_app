@@ -51,6 +51,55 @@ public enum Review {
         }
     }
 
+    /// 手機上的 Whisper 沒有標點、句子常被切在停頓或字中間（例如「介｜紹一下」）；
+    /// 把太短、沒有句尾標點、間隔不長的相鄰句子併起來，讓逐句稿是完整的一句話。
+    /// 只改句子編號（seg），不動標記
+    public static func mergeShortSentences(_ words: inout [Word], minChars: Int = 8, maxChars: Int = 30,
+                                           maxGap: Double = 0.8) {
+        struct Group { var seg: Int; var chars: Int; var start: Double; var end: Double; var punct: Bool }
+        var groups: [Group] = []
+        for w in words {
+            let kept = w.action != .cut && w.text != "～"
+            let n = kept ? w.text.filter { !$0.isPunctuation && !$0.isWhitespace }.count : 0
+            if let last = groups.last, last.seg == w.seg {
+                var g = last
+                if kept {
+                    if g.chars == 0 { g.start = w.start }
+                    g.chars += n
+                    g.end = w.end
+                    g.punct = TextRules.endsWithPunct(w.text)
+                }
+                groups[groups.count - 1] = g
+            } else {
+                groups.append(Group(seg: w.seg, chars: n, start: w.start, end: w.end,
+                                    punct: kept && TextRules.endsWithPunct(w.text)))
+            }
+        }
+        var newID: [Int: Int] = [:]
+        var id = -1
+        var prev: Group?
+        for g in groups {
+            // 整句被剪（例如只有「嗯」）：跟著前一句，不打斷合併
+            if g.chars == 0 {
+                if id < 0 { id = 0 }
+                newID[g.seg] = id
+                continue
+            }
+            if var p = prev, !p.punct, g.start - p.end < maxGap,
+               p.chars < minChars || g.chars < minChars, p.chars + g.chars <= maxChars {
+                p.chars += g.chars
+                p.end = g.end
+                p.punct = g.punct
+                prev = p
+            } else {
+                id += 1
+                prev = g
+            }
+            newID[g.seg] = id
+        }
+        for i in words.indices { words[i].seg = newID[words[i].seg] ?? words[i].seg }
+    }
+
     /// 給 Claude 的完整文字：指令＋第一部分逐句稿＋第二部分疑似贅詞
     public static func sentencesText(_ words: [Word]) -> String {
         let lines = sentences(words).map {

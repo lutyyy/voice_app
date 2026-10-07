@@ -256,4 +256,17 @@ final class SubtitleTests: XCTestCase {
         XCTAssertEqual(cues.map(\.speaker), [0, 1])
         XCTAssertTrue(Subtitles.srt(cues).contains("說話者 2：嗨你好"))
     }
+
+    func testMergeShortSentences() {
+        // 「那這部分｜可以跟大家介｜紹一下」被切成三句 → 併成一句；被剪的「嗯」跟著前一句；長句與相隔太久的不併
+        var words = [w(0, 0, 0.5, "那這部分"), w(1, 0.6, 1.5, "可以跟大家介"), w(2, 1.5, 1.9, "紹一下"),
+                     w(3, 2.0, 2.4, "嗯", .cut), w(4, 2.6, 4.5, "在二零二零年以後你們開始"),
+                     w(5, 6.0, 6.5, "這裡")]
+        Review.mergeShortSentences(&words)
+        XCTAssertEqual(words.map(\.seg), [0, 0, 0, 0, 1, 2])
+        // 有句尾標點就不跨句合併
+        var p = [w(0, 0, 0.5, "好。"), w(1, 0.6, 1, "我們")]
+        Review.mergeShortSentences(&p)
+        XCTAssertEqual(p.map(\.seg), [0, 1])
+    }
 }

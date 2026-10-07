@@ -260,7 +260,11 @@ final class ProjectModel: ObservableObject {
             say("標記要剪的地方…")
             let input = words
             let opts = settings.planOptions
-            let p = await offMain { Planner.plan(input, speech: a.speech, options: opts) }
+            let p = await offMain {
+                var p = Planner.plan(input, speech: a.speech, options: opts)
+                Review.mergeShortSentences(&p)
+                return p
+            }
             plan = p
             try save(p, "plan.json")
             meta.planOptions = opts
@@ -306,7 +310,11 @@ final class ProjectModel: ObservableObject {
         guard !plan.isEmpty, (meta.planOptions ?? PlanOptions()) != opts, let a = analysis,
               let words = try? load([Word].self, "words.json") else { return }
         let old = plan
-        var p = await offMain { Planner.plan(words, speech: a.speech, options: opts) }
+        var p = await offMain {
+            var p = Planner.plan(words, speech: a.speech, options: opts)
+            Review.mergeShortSentences(&p)
+            return p
+        }
         let manual = Self.manualMarks(old)
         Self.forEachKey(p) { i, key in
             if let m = manual[key] {
