@@ -50,7 +50,11 @@ jobs:
         run: .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB
       - name: 只處理一段（Large v3 Turbo，5～20 秒）
         working-directory: ios/E2E
-        run: .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB 5 20
+        # 第二次載入同一個模型：要直接用已下載的檔案，不能再下載
+        run: |
+          set -o pipefail
+          .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB 5 20 | tee out.txt
+          if grep -q "下載辨識模型" out.txt; then echo "❌ 已下載的模型又重新下載"; exit 1; fi
       - name: 16kHz 單聲道錄音的一段（Large v3 Turbo）
         working-directory: ios/E2E
         run: .build/release/E2E test16k.m4a openai_whisper-large-v3-v20240930_626MB 3 15

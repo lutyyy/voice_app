@@ -88,7 +88,13 @@ enum MediaIO {
         guard reader.startReading() else { throw MediaError.readFailed(reader.error?.localizedDescription ?? "") }
         var frames = 0
         var scratch = [Float]()
-        while let sb = output.copyNextSampleBuffer() {
+        // 有些格式（例如部分影片、雲端檔）的 reader.timeRange 不一定被遵守；依每段的時間戳自己裁切，確保只取選取範圍
+        let lo = range.map { Int(($0.start * Double(sampleRate)).rounded()) }
+        let hi = range.map { Int(($0.end * Double(sampleRate)).rounded()) }
+        let tol = sampleRate / 2
+        var cursor: Int?  // 下一段第一個樣本在原檔的位置（以 frame 計）
+        var shift: Int?   // 時間戳的起點偏移（第一段決定）
+        reading: while let sb = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
             guard let bb = CMSampleBufferGetDataBuffer(sb) else { continue }
             let bytes = CMBlockBufferGetDataLength(bb)
@@ -99,11 +105,37 @@ enum MediaIO {
                     throw MediaError.readFailed("無法複製音訊資料")
                 }
             }
-            try scratch.withUnsafeBufferPointer { try sink(UnsafeBufferPointer(rebasing: $0[0..<n])) }
-            frames += n / channels
+            let count = n / channels
+            var from = 0, to = count
+            if let lo, let hi {
+                let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+                var at: Int
+                if pts.isValid, pts.seconds.isFinite {
+                    at = Int((pts.seconds * Double(sampleRate)).rounded())
+                    if shift == nil {
+                        // 從範圍起點開始（有照範圍讀）或從 0 開始（沒照範圍讀）都直接用；
+                        // 其他奇怪的起點（檔案時間軸有偏移）就當作有照範圍讀
+                        shift = abs(at - lo) <= tol || at <= tol ? 0 : lo - at
+                    }
+                    at += shift ?? 0
+                } else {
+                    at = cursor ?? lo
+                }
+                cursor = at + count
+                from = min(count, max(0, lo - at))
+                to = max(from, min(count, hi - at))
+                if at >= hi { break reading }
+            }
+            if to > from {
+                try scratch.withUnsafeBufferPointer {
+                    try sink(UnsafeBufferPointer(rebasing: $0[(from * channels)..<(to * channels)]))
+                }
+                frames += to - from
+            }
             if duration > 0 { progress?(min(1, Double(frames) / Double(sampleRate) / duration)) }
         }
         if reader.status == .failed { throw MediaError.readFailed(reader.error?.localizedDescription ?? "") }
+        reader.cancelReading()
     }
 
     /// 解碼成原始 Float32 檔（之後以記憶體映射讀取，長檔也不吃記憶體）

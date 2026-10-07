@@ -66,16 +66,23 @@ final class Transcriber: ObservableObject {
         readyModel = nil
         let task = Task { [self] in
             defer { if loading?.model == model { loading = nil } }
-            progress(0, "下載辨識模型（只有第一次需要）")
-            let folder = try await WhisperKit.download(variant: model, progressCallback: { p in
-                progress(p.fractionCompleted, "下載辨識模型（只有第一次需要）")
-            })
-            progress(.nan, Self.optimizing)
-            // 背景不能用 GPU：聲譜計算改用 CPU（很輕），編碼與解碼本來就用神經網路引擎
-            let compute = ModelComputeOptions(melCompute: .cpuOnly)
-            let config = WhisperKitConfig(model: model, modelFolder: folder.path, computeOptions: compute, verbose: false,
-                                          logLevel: .error, prewarm: true, load: true, download: false)
-            let p = try await WhisperKit(config)
+            // 已經下載過：直接用本機檔案，不再連網檢查（更新 App 後也不用重新下載）
+            var p: WhisperKit?
+            if let local = Self.localFolder(model) {
+                progress(.nan, Self.optimizing)
+                p = try? await WhisperKit(Self.config(model, folder: local))
+                if p == nil { Self.forget(model) }  // 檔案壞了：重新下載
+            }
+            if p == nil {
+                progress(0, "下載辨識模型（只有第一次需要）")
+                let folder = try await WhisperKit.download(variant: model, progressCallback: { f in
+                    progress(f.fractionCompleted, "下載辨識模型（只有第一次需要）")
+                })
+                progress(.nan, Self.optimizing)
+                p = try await WhisperKit(Self.config(model, folder: folder))
+                Self.remember(model, folder: folder)
+            }
+            guard let p else { return }
             guard loading?.model == model else { return }  // 已經改要別的模型
             pipe = p
             loaded = model
@@ -107,6 +114,41 @@ final class Transcriber: ObservableObject {
     }
 
     static let optimizing = "載入並最佳化辨識模型"
+
+    private static func config(_ model: String, folder: URL) -> WhisperKitConfig {
+        // 背景不能用 GPU：聲譜計算改用 CPU（很輕），編碼與解碼本來就用神經網路引擎
+        let compute = ModelComputeOptions(melCompute: .cpuOnly)
+        return WhisperKitConfig(model: model, modelFolder: folder.path, computeOptions: compute, verbose: false,
+                                logLevel: .error, prewarm: true, load: true, download: false)
+    }
+
+    // MARK: - 已下載的模型
+    // 記錄相對於 Documents 的路徑：App 更新後資料夾的絕對路徑可能會變
+
+    private static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
+    private static func key(_ model: String) -> String { "modelFolder." + model }
+
+    private static func localFolder(_ model: String) -> URL? {
+        guard let rel = UserDefaults.standard.string(forKey: key(model)) else { return nil }
+        let url = documents.appendingPathComponent(rel)
+        let fm = FileManager.default
+        for part in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"]
+        where !fm.fileExists(atPath: url.appendingPathComponent(part).path) {
+            return nil
+        }
+        return url
+    }
+
+    private static func remember(_ model: String, folder: URL) {
+        let docs = documents.standardizedFileURL.resolvingSymlinksInPath().path
+        let full = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        guard full.hasPrefix(docs + "/") else { return }
+        UserDefaults.standard.set(String(full.dropFirst(docs.count + 1)), forKey: key(model))
+    }
+
+    private static func forget(_ model: String) {
+        UserDefaults.standard.removeObject(forKey: key(model))
+    }
 
     func unload() {
         pipe = nil

@@ -40,9 +40,24 @@ let peak = audio.map(abs).max() ?? 0
 let rms = (audio.reduce(0) { $0 + $1 * $1 } / Float(audio.count)).squareRoot()
 print("16k peak \(peak), rms \(rms), nan \(audio.contains { $0.isNaN })")
 if peak < 0.001 || peak > 100 { fail("16k 音訊數值異常") }
+if let r = range {
+    // 只解碼一段：長度要對，內容要跟整檔解碼的同一段一樣（確認真的有照範圍切，不是從頭開始）
+    if abs(Double(audio.count) / 16000 - r.length) > 0.1 { fail("範圍解碼長度不符") }
+    let whole = try await MediaIO.decode16k(url)
+    let off = Int(r.start * 16000)
+    let n = min(audio.count, whole.count - off)
+    var dot: Float = 0, aa: Float = 0, bb: Float = 0
+    for i in 0..<n { dot += audio[i] * whole[off + i]; aa += audio[i] * audio[i]; bb += whole[off + i] * whole[off + i] }
+    let corr = dot / max(1e-9, (aa * bb).squareRoot())
+    print("範圍內容與整檔同段的相關係數 \(corr)")
+    if corr < 0.9 { fail("範圍解碼的內容不是選取的那段") }
+}
 
 let t0 = Date()
-try await Transcriber.shared.load(model: model) { p, s in if !p.isNaN { _ = p } else { print(s) } }
+var lastStatus = ""
+try await Transcriber.shared.load(model: model) { _, s in
+    if s != lastStatus { lastStatus = s; print(s) }
+}
 print("model loaded in \(Int(Date().timeIntervalSince(t0))) s")
 let userPrompt = ProcessInfo.processInfo.environment["E2E_PROMPT"]
 let words = try await Transcriber.shared.transcribe(audio, prompt: userPrompt, progress: { _ in },
