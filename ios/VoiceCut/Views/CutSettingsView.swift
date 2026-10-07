@@ -4,13 +4,17 @@ import SwiftUI
 /// 剪輯風格選擇（自然／標準／精簡；改過參數時顯示「自訂」）
 struct PresetPicker: View {
     @EnvironmentObject private var settings: AppSettings
+    /// 有給的話一直顯示「自訂」，點了就呼叫（打開微調頁）
+    var onCustom: (() -> Void)?
 
     var body: some View {
         Picker("剪輯風格", selection: Binding(
             get: { settings.preset?.rawValue ?? "custom" },
-            set: { if let p = CutPreset(rawValue: $0) { settings.apply(p) } })) {
+            set: { v in
+                if let p = CutPreset(rawValue: v) { settings.apply(p) } else { onCustom?() }
+            })) {
             ForEach(CutPreset.allCases) { Text($0.name).tag($0.rawValue) }
-            if settings.preset == nil { Text("自訂").tag("custom") }
+            if settings.preset == nil || onCustom != nil { Text("自訂").tag("custom") }
         }
         .pickerStyle(.segmented)
     }
@@ -20,18 +24,23 @@ struct PresetPicker: View {
 struct SpeedPicker: View {
     @EnvironmentObject private var settings: AppSettings
     @State private var pending: SpeedTier?
+    /// 有給的話一直顯示「自訂」，點了就呼叫（打開微調頁）
+    var onCustom: (() -> Void)?
 
     var body: some View {
         Picker("處理速度", selection: Binding(
             get: { settings.speed?.rawValue ?? "custom" },
             set: { v in
-                guard let t = SpeedTier(rawValue: v) else { return }
+                guard let t = SpeedTier(rawValue: v) else {
+                    onCustom?()
+                    return
+                }
                 if t.warning != nil { pending = t } else { settings.apply(t) }
             })) {
             ForEach(SpeedTier.allCases) { t in
                 Text(t.warning == nil ? t.name : t.name + " ⚠︎").tag(t.rawValue)
             }
-            if settings.speed == nil { Text("自訂").tag("custom") }
+            if settings.speed == nil || onCustom != nil { Text("自訂").tag("custom") }
         }
         .pickerStyle(.segmented)
         .alert("這支 iPhone 可能跑不動", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),

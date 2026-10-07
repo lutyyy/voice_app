@@ -119,7 +119,7 @@ struct SettingsView: View {
 }
 
 /// 辨識模型、補抓、補剪、輸出格式
-private struct AdvancedSettingsView: View {
+struct AdvancedSettingsView: View {
     @EnvironmentObject private var settings: AppSettings
 
     var body: some View {

@@ -36,6 +36,8 @@ struct RangeSelectView: View {
     @AppStorage("rangeHintSeen") private var hintSeen = false
     @EnvironmentObject private var settings: AppSettings
     @State private var showOptions = false
+    @State private var tuneSpeed = false
+    @State private var tuneCut = false
     /// 最後拖的是哪個把手（放大鏡放大那裡、畫面跳到那裡）
     @State private var editingEnd = false
     @State private var nudging: Bool?
@@ -344,6 +346,7 @@ struct RangeSelectView: View {
         return [who, settings.speed?.name ?? "自訂速度", settings.preset?.name ?? "自訂風格"].joined(separator: " · ")
     }
 
+    /// 人數、速度、風格；速度和風格都有「自訂」，點了進微調頁，之後顯示目前的參數摘要
     private var optionsSheet: some View {
         NavigationStack {
             ScrollView {
@@ -358,14 +361,14 @@ struct RangeSelectView: View {
                     .pickerStyle(.segmented)
                     Text(speakers == 1 ? "單人口說、Vlog。" : "訪談、對談、會議：逐字稿會標出誰在說話（第一次要下載語者辨識模型，請連 Wi‑Fi）。")
                         .font(.caption).foregroundStyle(.secondary)
+
                     Text("處理速度").font(.subheadline.weight(.semibold)).padding(.top, 8)
-                    SpeedPicker()
-                    Text("越慢越準；之後要換得重新辨識。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    SpeedPicker { tuneSpeed = true }
+                    tuneLink(settings.speed?.note ?? "已自訂辨識模型、漏字補抓與補剪", title: "微調辨識設定") { tuneSpeed = true }
+
                     Text("剪輯風格").font(.subheadline.weight(.semibold)).padding(.top, 8)
-                    PresetPicker()
-                    Text("處理完也可以隨時換。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    PresetPicker { tuneCut = true }
+                    tuneLink(settings.preset?.note ?? "已自訂停頓、拖音與剪接參數", title: "微調剪輯參數") { tuneCut = true }
                 }
                 .padding()
             }
@@ -374,8 +377,25 @@ struct RangeSelectView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { showOptions = false } }
             }
+            .navigationDestination(isPresented: $tuneSpeed) { AdvancedSettingsView() }
+            .navigationDestination(isPresented: $tuneCut) { CutSettingsView() }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
+    }
+
+    /// 說明＋「微調…」連結
+    private func tuneLink(_ note: String, title: String, action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(note).font(.caption).foregroundStyle(.secondary)
+            Button(action: action) {
+                HStack(spacing: 4) {
+                    Image(systemName: "slider.horizontal.3")
+                    Text(title)
+                    Image(systemName: "chevron.right").font(.caption2.weight(.bold))
+                }
+                .font(.subheadline.weight(.semibold))
+            }
+        }
     }
 
     /// 畫面跳到 t（只有影片需要；聲音檔沒有畫面）
