@@ -18,6 +18,9 @@ struct ProjectView: View {
     @State private var showAsk = false
     @State private var discard = false
     @State private var confirmCancel = false
+    @StateObject private var player = ClipPlayer()
+    /// 播放鍵：剪後（跳過剪掉的字）或原音；長按切換
+    @AppStorage("playCut") private var playCut = true
 
     var body: some View {
         content
@@ -93,7 +96,7 @@ struct ProjectView: View {
                 .padding()
             }
         } else {
-            TranscriptEditor(model: model)
+            TranscriptEditor(model: model, player: player, playCut: playCut)
                 .safeAreaInset(edge: .top, spacing: 0) {
                     // 輸出以外的工作（Claude 判斷、辨識說話者…）在這裡顯示進度
                     if model.isBusy && !showExport { busyBanner }
@@ -165,8 +168,53 @@ struct ProjectView: View {
         .background(.bar)
     }
 
+    private var playing: Bool { player.playingID == TranscriptEditor.playAllID }
+
+    /// 大播放鍵：點一下播放／暫停（從上次停的地方繼續），長按選剪後或原音
+    private var playButton: some View {
+        Button {
+            if playing {
+                player.stop()
+            } else {
+                TranscriptEditor.playAll(model, player, from: player.lastTime ?? 0, cutOnly: playCut)
+            }
+        } label: {
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: playing ? "pause.fill" : "play.fill")
+                    .font(.title3)
+                    .foregroundStyle(.black)
+                    .frame(width: 44, height: 44)
+                    .background(Color.white, in: Circle())
+                if !playCut {
+                    Text("原")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.black)
+                        .frame(width: 17, height: 17)
+                        .background(Color.orange, in: Circle())
+                        .offset(x: 3, y: 3)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("播放剪後（跳過剪掉的字）", systemImage: playCut ? "checkmark" : "scissors") {
+                playCut = true
+                TranscriptEditor.playAll(model, player, from: player.lastTime ?? 0, cutOnly: true)
+            }
+            Button("播放原音", systemImage: playCut ? "waveform" : "checkmark") {
+                playCut = false
+                TranscriptEditor.playAll(model, player, from: player.lastTime ?? 0, cutOnly: false)
+            }
+        }
+        .disabled(model.isBusy)
+        .accessibilityLabel(playing ? "暫停" : (playCut ? "播放剪後" : "播放原音"))
+        .accessibilityHint("長按可以切換剪後或原音")
+    }
+
     private var bottomBar: some View {
         HStack(spacing: 6) {
+            playButton
+                .padding(.trailing, 4)
             Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward").frame(width: 36, height: 36) }
                 .disabled(model.undoStack.isEmpty || model.isBusy)
                 .accessibilityLabel("復原")
@@ -229,13 +277,13 @@ struct ProjectView: View {
                     model.askClaude()
                 }
             } else {
-                Button("設定 Claude API 金鑰…", systemImage: "key") { showSettings = true }
+                Button("設定 Claude 金鑰…", systemImage: "key") { showSettings = true }
             }
-            Button("用 Claude／Gemini App 判斷（用你的訂閱）", systemImage: "arrow.up.forward.app") { showAsk = true }
+            Button("用 Claude／Gemini App", systemImage: "arrow.up.forward.app") { showAsk = true }
             if model.meta.deletes != nil {
-                Button("清除 Claude 的判斷", systemImage: "xmark.circle", role: .destructive) { model.clearReply() }
+                Button("清除判斷", systemImage: "xmark.circle", role: .destructive) { model.clearReply() }
             } else {
-                Toggle("疑似贅詞全部剪掉", isOn: $settings.cutReview)
+                Toggle("疑似贅詞全部剪", isOn: $settings.cutReview)
             }
         } label: {
             Image(systemName: model.meta.deletes == nil ? "sparkles" : "sparkles.rectangle.stack.fill")

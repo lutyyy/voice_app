@@ -4,7 +4,9 @@ import SwiftUI
 /// 逐字稿編輯器（專案頁的主畫面）：聲波時間軸、試聽、篩選、整句滑動、同字批次、搜尋、修正錯字
 struct TranscriptEditor: View {
     @ObservedObject var model: ProjectModel
-    @StateObject private var player = ClipPlayer()
+    @ObservedObject var player: ClipPlayer
+    /// 播放剪後（跳過剪掉的字）還是原音
+    var playCut = true
     @State private var filter: Filter = .all
     @State private var query = ""
     @State private var editing: Word?
@@ -12,6 +14,9 @@ struct TranscriptEditor: View {
     @State private var toast: String?
     @State private var renaming: Int?
     @State private var renameText = ""
+    @State private var searching = false
+    @FocusState private var searchFocused: Bool
+    @AppStorage("editorHintSeen") private var hintSeen = false
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "全部", cuts = "有剪的", review = "疑似贅詞", manual = "手動改過"
@@ -62,31 +67,25 @@ struct TranscriptEditor: View {
         ScrollViewReader { proxy in
             List {
                 Section {
-                    TimelineStrip(waveform: model.waveform, duration: model.meta.info?.duration ?? (words.last?.end ?? 0),
-                                  cuts: Self.cutSpans(words), playhead: player.current) { t in
-                        if let s = all.last(where: { $0.start <= t + 0.05 }) ?? all.first {
-                            if !shown.contains(where: { $0.id == s.id }) {
-                                filter = .all
-                                query = ""
-                            }
-                            withAnimation { proxy.scrollTo(s.id, anchor: .top) }
-                        }
-                    }
-                    .frame(height: 56)
-                    .listRowSeparator(.hidden)
-                    stats(words)
+                    header(words, all: all, shown: shown, proxy: proxy)
                         .listRowSeparator(.hidden)
                     chips(all)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets())
+                    if searching {
+                        searchField
+                            .listRowSeparator(.hidden)
+                    }
                 }
                 if shown.isEmpty {
                     Text(query.isEmpty ? "沒有符合的句子" : "找不到「\(query)」")
                         .foregroundStyle(.secondary)
+                        .listRowSeparator(.hidden)
                 }
                 ForEach(shown) { s in
                     sentenceRow(s, speaker: who[s.id])
                         .id(s.id)
+                        .listRowSeparator(.hidden)
                         .swipeActions(edge: .trailing) {
                             Button {
                                 model.setSentence(s.id, keep: false)
@@ -106,8 +105,12 @@ struct TranscriptEditor: View {
                 }
             }
             .listStyle(.plain)
+            // 播放時逐字稿跟著捲到正在播的那句
+            .onChange(of: playingSentence(all)) { _, id in
+                guard let id, player.playingID == Self.playAllID else { return }
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: .center) }
+            }
         }
-        .searchable(text: $query, prompt: "搜尋逐字稿")
         .alert("說話者名稱", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField(renaming.map { "說話者 \($0 + 1)" } ?? "", text: $renameText)
             Button("儲存") {
@@ -143,28 +146,76 @@ struct TranscriptEditor: View {
             }
         }
         .animation(.spring(duration: 0.3), value: toast)
-        .onDisappear { player.stop() }
+        .onDisappear {
+            player.stop()
+            hintSeen = true
+        }
     }
 
-    /// 原長 → 預估剪後、剪了幾處、Claude 是否已判斷
-    private func stats(_ words: [Word]) -> some View {
+    /// 正在播的那句
+    private func playingSentence(_ all: [Sentence]) -> Int? {
+        guard let t = player.current else { return nil }
+        return all.last(where: { $0.start <= t + 0.05 })?.id
+    }
+
+    // MARK: - 播放
+
+    static let playAllID = "all"
+
+    /// 從 t 開始播到最後；剪後模式會跳過被剪掉的字
+    static func playAll(_ model: ProjectModel, _ player: ClipPlayer, from t: Double, cutOnly: Bool) {
+        let words = model.decided
+        guard let last = words.last else { return }
+        let start = t >= last.end - 0.1 ? 0 : t
+        player.play(model.sourceURL, from: max(0, start), to: last.end + 0.5, offset: model.sourceOffset,
+                    id: playAllID, skip: cutOnly ? cutSpans(words) : [])
+    }
+
+    // MARK: - 上方
+
+    /// 聲波時間軸（上面疊「原長 → 剪後」），下面一行剪幾處、Claude 狀態；操作提示只在第一次顯示
+    private func header(_ words: [Word], all: [Sentence], shown: [Sentence], proxy: ScrollViewProxy) -> some View {
         let total = model.meta.info?.duration ?? (words.last?.end ?? 0)
-        let cuts = Self.cutSpans(words).count
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                if let e = model.estimate {
-                    Text("\(ProjectModel.clock(total)) → \(ProjectModel.clock(e))")
-                        .font(.title3.monospacedDigit().bold())
-                        .contentTransition(.numericText())
-                        .animation(.default, value: e)
-                    Text("−\(Int(((1 - e / max(total, 0.01)) * 100).rounded()))%")
-                        .font(.subheadline.monospacedDigit().bold())
-                        .foregroundStyle(Color.accentColor)
-                } else {
-                    Text(ProjectModel.clock(total)).font(.title3.monospacedDigit().bold())
+        let cuts = Self.cutSpans(words)
+        return VStack(alignment: .leading, spacing: 8) {
+            TimelineStrip(waveform: model.waveform, duration: total, cuts: cuts, playhead: player.current) { t in
+                if let s = all.last(where: { $0.start <= t + 0.05 }) ?? all.first {
+                    if !shown.contains(where: { $0.id == s.id }) {
+                        filter = .all
+                        query = ""
+                    }
+                    withAnimation { proxy.scrollTo(s.id, anchor: .top) }
                 }
-                Spacer()
-                Text("剪 \(cuts) 處").font(.subheadline).foregroundStyle(.secondary)
+            }
+            .frame(height: 60)
+            .overlay(alignment: .topLeading) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if let e = model.estimate {
+                        Text("\(ProjectModel.clock(total)) → \(ProjectModel.clock(e))")
+                            .font(.headline.monospacedDigit())
+                            .contentTransition(.numericText())
+                            .animation(.default, value: e)
+                        Text("−\(Int(((1 - e / max(total, 0.01)) * 100).rounded()))%")
+                            .font(.subheadline.monospacedDigit().bold())
+                            .foregroundStyle(Color.accentColor)
+                    } else {
+                        Text(ProjectModel.clock(total)).font(.headline.monospacedDigit())
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(.black.opacity(0.6), in: Capsule())
+                .padding(4)
+                .allowsHitTesting(false)
+            }
+            .overlay(alignment: .topTrailing) {
+                Text("剪 \(cuts.count) 處")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.black.opacity(0.6), in: Capsule())
+                    .padding(4)
+                    .allowsHitTesting(false)
             }
             if model.meta.deletes != nil {
                 if let d = model.deletes {
@@ -177,10 +228,30 @@ struct TranscriptEditor: View {
                         .foregroundStyle(.orange)
                 }
             }
-            Text("點字切換剪／留 · 長按試聽或改字 · 左右滑整句")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if !hintSeen {
+                Text("點字切換剪／留 · 長按試聽或改字 · 左右滑整句 · 點時間從那句播")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("搜尋逐字稿", text: $query)
+                .focused($searchFocused)
+                .submitLabel(.search)
+            Button("取消") {
+                query = ""
+                searching = false
+            }
+            .font(.subheadline)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.08), in: Capsule())
+        .onAppear { searchFocused = true }
     }
 
     /// 篩選：膠囊按鈕，後面是句數
@@ -205,6 +276,19 @@ struct TranscriptEditor: View {
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(filter == f ? .isSelected : [])
                 }
+                Button {
+                    searching.toggle()
+                    if !searching { query = "" }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .foregroundStyle(searching || !query.isEmpty ? Color.black : Color.primary)
+                        .background(searching || !query.isEmpty ? Color.accentColor : Color.white.opacity(0.1), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("搜尋逐字稿")
             }
             .padding(.horizontal)
             .padding(.vertical, 6)
@@ -215,66 +299,51 @@ struct TranscriptEditor: View {
         all.filter { Self.matches(f, $0) }.count
     }
 
-    @ViewBuilder
+    /// 一句：句首灰色小時間（點了從這句開始播）、說話者名字，接著字一個貼一個排
     private func sentenceRow(_ s: Sentence, speaker: Int?) -> some View {
-        let srcID = "src\(s.id)", outID = "out\(s.id)"
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                if let sp = speaker {
-                    Button {
-                        renameText = model.meta.speakerNames.flatMap { sp < $0.count ? $0[sp] : nil } ?? ""
-                        renaming = sp
-                    } label: {
-                        HStack(spacing: 5) {
-                            Circle().fill(ExportView.color(sp)).frame(width: 8, height: 8)
-                            Text(model.speakerName(sp))
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(ExportView.color(sp))
-                        }
-                    }
-                    .accessibilityHint("點兩下改名字")
-                }
-                Text(String(format: "S%03d · %@", s.id, ProjectModel.clock(s.start)))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                Spacer()
+        let here = player.playingID == Self.playAllID && playingSentenceID(s)
+        return FlowLayout(spacing: 0, lineSpacing: 6) {
+            if let sp = speaker {
                 Button {
-                    if player.playingID == srcID {
-                        player.stop()
-                    } else {
-                        player.play(model.sourceURL, from: max(0, s.start - 0.2), to: s.end + 0.3,
-                                    offset: model.sourceOffset, id: srcID)
-                    }
+                    renameText = model.meta.speakerNames.flatMap { sp < $0.count ? $0[sp] : nil } ?? ""
+                    renaming = sp
                 } label: {
-                    Label("原音", systemImage: player.playingID == srcID ? "stop.fill" : "play.fill")
-                        .font(.caption)
+                    Text(model.speakerName(sp))
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(ExportView.color(sp))
+                        .padding(.trailing, 6)
+                        .padding(.vertical, 3)
                 }
-                .accessibilityLabel(player.playingID == srcID ? "停止" : "播放這句原音")
-                if let out = model.outputURL, let o = model.outputTime(for: s.start) {
-                    Button {
-                        if player.playingID == outID {
-                            player.stop()
-                        } else {
-                            let kept = s.words.filter { $0.action == .keep }.reduce(0) { $0 + $1.end - $1.start }
-                            player.play(out, from: max(0, o - 1), to: o + max(2, kept + 0.8), id: outID, tracksTranscript: false)
-                        }
-                    } label: {
-                        Label("剪後", systemImage: player.playingID == outID ? "stop.fill" : "scissors")
-                            .font(.caption)
-                    }
-                    .accessibilityLabel(player.playingID == outID ? "停止" : "試聽剪好的這句")
+                .buttonStyle(.borderless)
+                .accessibilityHint("點兩下改名字")
+            }
+            Button {
+                if here {
+                    player.stop()
+                } else {
+                    Self.playAll(model, player, from: max(0, s.start - 0.15), cutOnly: playCut)
                 }
+            } label: {
+                Text(ProjectModel.clock(s.start))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(here ? Color.accentColor : Color.secondary)
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 3)
             }
             .buttonStyle(.borderless)
-            FlowLayout(spacing: 2, lineSpacing: 4) {
-                ForEach(Array(s.words.enumerated()), id: \.offset) { _, w in
-                    WordChip(word: w, playing: isPlaying(w)) { model.toggle(w, to: w.action == .cut) }
-                        .contextMenu { menu(w) }
-                        .disabled(model.isBusy)
-                }
+            .accessibilityLabel(here ? "停止" : "從 \(ProjectModel.clock(s.start)) 開始播放")
+            ForEach(Array(s.words.enumerated()), id: \.offset) { _, w in
+                WordChip(word: w, playing: isPlaying(w)) { model.toggle(w, to: w.action == .cut) }
+                    .contextMenu { menu(w) }
+                    .disabled(model.isBusy)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+    }
+
+    private func playingSentenceID(_ s: Sentence) -> Bool {
+        guard let t = player.current else { return false }
+        return t >= s.start - 0.2 && t < s.end + 0.2
     }
 
     private func isPlaying(_ w: Word) -> Bool {
@@ -400,18 +469,21 @@ struct WordChip: View {
         return cut ? Color.red.opacity(0.12) : Color.clear
     }
 
-    private var borderColor: Color { Self.isReviewOrigin(word) ? Color.orange : Color.clear }
-
     var body: some View {
         Text(word.display)
             .font(.body)
             .underline(word.edited != nil, color: Color.blue)
             .strikethrough(cut, color: Color.red)
             .foregroundStyle(textColor)
-            .padding(.horizontal, 3)
-            .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 4).fill(fillColor))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(borderColor, lineWidth: 1))
+            .padding(.horizontal, 0.5)
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 3).fill(fillColor))
+            // 疑似贅詞：橘色底線
+            .overlay(alignment: .bottom) {
+                if Self.isReviewOrigin(word) {
+                    Capsule().fill(Color.orange).frame(height: 2)
+                }
+            }
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
             .accessibilityLabel(word.display + (cut ? "，會剪掉" : ""))

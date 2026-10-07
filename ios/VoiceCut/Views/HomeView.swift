@@ -205,7 +205,7 @@ private struct ProjectRow: View {
                 if let model {
                     LiveStatus(model: model, meta: meta)
                 } else {
-                    Text(Self.summary(meta)).font(.caption).foregroundStyle(.secondary)
+                    Text(Self.summary(meta)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 4)
@@ -220,16 +220,20 @@ private struct ProjectRow: View {
             StatusBadge(text: "未處理", color: .orange)
         } else if case .failed? = model?.stage {
             StatusBadge(text: "失敗", color: .red)
-        } else if let o = meta.outputDuration, !meta.outputStale, let d = meta.info?.duration, d > 0 {
+        } else if let o = meta.outputDuration, !meta.outputStale,
+                  let d = meta.range.map({ $0.end - $0.start }) ?? meta.info?.duration, d > 0 {
             StatusBadge(text: "−\(Int(((1 - o / d) * 100).rounded()))%", color: .accentColor)
                 .accessibilityLabel("剪後 \(ProjectModel.clock(o))")
         }
     }
 
-    /// 剪好的顯示「原長 → 剪後」，否則顯示長度；後面接日期
+    /// 只處理一段的標出「片段 2:14–2:38」；剪好的顯示「長度 → 剪後」，否則顯示長度；後面接日期
     static func summary(_ meta: ProjectMeta) -> String {
         var parts: [String] = []
-        if let d = meta.info?.duration {
+        if let r = meta.range {
+            parts.append("片段 " + ProjectModel.clock(r.start) + "–" + ProjectModel.clock(r.end))
+        }
+        if let d = meta.range.map({ $0.end - $0.start }) ?? meta.info?.duration {
             if let o = meta.outputDuration, !meta.outputStale {
                 parts.append(ProjectModel.clock(d) + " → " + ProjectModel.clock(o))
             } else {
@@ -257,7 +261,7 @@ private struct LiveStatus: View {
                     .frame(maxWidth: 160)
             }
         } else {
-            Text(ProjectRow.summary(model.meta)).font(.caption).foregroundStyle(.secondary)
+            Text(ProjectRow.summary(model.meta)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
     }
 }
