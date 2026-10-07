@@ -39,8 +39,8 @@ struct ProcessingCard: View {
                 StepList(steps: model.steps)
             }
 
-            if model.step == Transcriber.optimizing {
-                Text("第一次使用這個模型時，iPhone 要把模型最佳化給神經網路引擎，約需 2～10 分鐘，期間進度不會變化，請耐心等候。完成後會記住，之後只要幾秒。")
+            if Transcriber.isOptimizing(model.step) {
+                Text(optimizeNote)
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -55,7 +55,7 @@ struct ProcessingCard: View {
     private var title: String {
         switch model.steps.first(where: { $0.state == .running })?.id {
         case "decode", "analyze": return "聲波分析中"
-        case "model": return "準備辨識模型"
+        case "model": return model.step == Transcriber.downloading ? "下載辨識模型" : "準備辨識模型"
         case "asr", "gaps": return "聆聽並辨識中"
         case "plan": return "找出要剪的地方"
         case "claude": return "Claude 思考中"
@@ -63,6 +63,17 @@ struct ProcessingCard: View {
         case let id? where id.hasPrefix("refine"): return "檢查成品中"
         default: return "處理中"
         }
+    }
+
+    /// 說清楚是在下載還是在最佳化，以及大概要多久
+    private var optimizeNote: String {
+        var s = model.step == Transcriber.optimizing
+            ? "模型已下載完成，iPhone 正在把它最佳化給神經網路引擎，第一次約需 2～10 分鐘，期間進度可能不動。"
+            : "模型檔已在手機上，沒有重新下載。剛更新 App 或重新開機後，iOS 可能要重新最佳化一次（這是系統的規定，App 無法跳過）；沒有的話幾秒就好。"
+        if let last = Transcriber.lastOptimizeSeconds(AppSettings.shared.resolvedModel) {
+            s += "上次花了約 " + ProjectModel.clock(last) + "。"
+        }
+        return s
     }
 
     private func timing(_ now: Date) -> String {

@@ -50,13 +50,13 @@ final class Transcriber: ObservableObject {
     func load(model: String, progress: @escaping (Double, String) -> Void) async throws {
         if loaded == model, pipe != nil { return }
         if let l = loading, l.model == model {
-            progress(.nan, Self.optimizing)
+            progress(.nan, Self.reoptimizing)
             try await Self.waitCancellable(l.task)
             return
         }
         // 另一個模型還在載入（之前取消的）：先等它結束，避免兩個模型同時佔用記憶體
         if let l = loading {
-            progress(.nan, Self.optimizing)
+            progress(.nan, Self.reoptimizing)
             _ = try? await Self.waitCancellable(l.task)
             try Task.checkCancellation()
             if loaded == model, pipe != nil { return }
@@ -69,17 +69,15 @@ final class Transcriber: ObservableObject {
             // 已經下載過：直接用本機檔案，不再連網檢查（更新 App 後也不用重新下載）
             var p: WhisperKit?
             if let local = Self.localFolder(model) {
-                progress(.nan, Self.optimizing)
-                p = try? await WhisperKit(Self.config(model, folder: local))
+                p = try? await Self.timedLoad(model, folder: local, label: Self.reoptimizing, progress: progress)
                 if p == nil { Self.forget(model) }  // 檔案壞了：重新下載
             }
             if p == nil {
-                progress(0, "下載辨識模型（只有第一次需要）")
+                progress(0, Self.downloading)
                 let folder = try await WhisperKit.download(variant: model, progressCallback: { f in
-                    progress(f.fractionCompleted, "下載辨識模型（只有第一次需要）")
+                    progress(f.fractionCompleted, Self.downloading)
                 })
-                progress(.nan, Self.optimizing)
-                p = try await WhisperKit(Self.config(model, folder: folder))
+                p = try await Self.timedLoad(model, folder: folder, label: Self.optimizing, progress: progress)
                 Self.remember(model, folder: folder)
             }
             guard let p else { return }
@@ -113,7 +111,39 @@ final class Transcriber: ObservableObject {
         }
     }
 
-    static let optimizing = "載入並最佳化辨識模型"
+    static let downloading = "下載辨識模型（只有第一次需要）"
+    static let optimizing = "第一次最佳化辨識模型"
+    /// 模型檔已在手機上，不用下載；但 iOS 可能要重新最佳化（例如 App 更新後）
+    static let reoptimizing = "載入辨識模型（不用下載）"
+
+    static func isOptimizing(_ step: String) -> Bool { step == optimizing || step == reoptimizing }
+
+    /// 上次載入（含最佳化）花了幾秒；超過 20 秒才記，代表真的有最佳化
+    static func lastOptimizeSeconds(_ model: String) -> Double? {
+        let v = UserDefaults.standard.double(forKey: "optimizeSeconds." + model)
+        return v > 0 ? v : nil
+    }
+
+    /// 載入模型並計時；有上次的時間就用它估計進度（最多到 95%），沒有就顯示無法估計
+    private static func timedLoad(_ model: String, folder: URL, label: String,
+                                  progress: @escaping (Double, String) -> Void) async throws -> WhisperKit {
+        let started = Date()
+        let last = lastOptimizeSeconds(model)
+        progress(last == nil ? .nan : 0, label)
+        let ticker = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                if let last, Date().timeIntervalSince(started) > 3 {
+                    progress(min(0.95, Date().timeIntervalSince(started) / last), label)
+                }
+            }
+        }
+        defer { ticker.cancel() }
+        let p = try await WhisperKit(config(model, folder: folder))
+        let took = Date().timeIntervalSince(started)
+        if took > 20 { UserDefaults.standard.set(took, forKey: "optimizeSeconds." + model) }
+        return p
+    }
 
     private static func config(_ model: String, folder: URL) -> WhisperKitConfig {
         // 背景不能用 GPU：聲譜計算改用 CPU（很輕），編碼與解碼本來就用神經網路引擎
