@@ -30,15 +30,41 @@ public struct RenderOptions: Codable, Equatable, Sendable {
 
 public enum SegKind: String, Codable, Sendable { case src, noise }
 
+/// 使用者對一個接點的微調。接點以「前一個保留的字」的開始時間 after 識別：
+/// 可以是剪掉內容的地方、保留下來的停頓，或兩個字之間插入停頓。沒調整的接點照自動規則
+public struct JoinEdit: Codable, Equatable, Sendable {
+    /// 接點前那個字的開始時間（秒）
+    public var after: Double
+    /// 停頓秒數：nil = 自動、負數 = 原樣（不壓縮也不補）、0 以上 = 指定長度（不夠就補底噪，影片不補）
+    public var pause: Double?
+    /// 交叉淡化總長（秒）：nil = 自動、0 = 直接切
+    public var fade: Double?
+    /// 前一個字的結尾、後一個字的開頭往後挪幾秒（負數往前）；有挪就不再自動對齊安靜處
+    public var nudgeEnd: Double
+    public var nudgeStart: Double
+    public init(after: Double, pause: Double? = nil, fade: Double? = nil, nudgeEnd: Double = 0, nudgeStart: Double = 0) {
+        self.after = after
+        self.pause = pause
+        self.fade = fade
+        self.nudgeEnd = nudgeEnd
+        self.nudgeStart = nudgeStart
+    }
+    /// 沒有任何調整
+    public var isEmpty: Bool { pause == nil && fade == nil && nudgeEnd == 0 && nudgeStart == 0 }
+}
+
 /// 輸出的一段：原檔的 [start, end)，或長度為 end - start 的合成底噪
 public struct Seg: Codable, Equatable, Sendable {
     public var start: Double
     public var end: Double
     public var kind: SegKind
-    public init(_ start: Double, _ end: Double, _ kind: SegKind) {
+    /// 這段結尾接下一段時的交叉淡化總長（nil = 自動）
+    public var fadeOut: Double?
+    public init(_ start: Double, _ end: Double, _ kind: SegKind, fadeOut: Double? = nil) {
         self.start = start
         self.end = end
         self.kind = kind
+        self.fadeOut = fadeOut
     }
     public var length: Double { end - start }
 }
@@ -60,6 +86,11 @@ struct Piece {
     var end: Double
     var boundary = false
     var fill = 0.0
+    /// 使用者對這段結尾那個接點的微調
+    var edit: JoinEdit?
+    /// 開頭／結尾是使用者挪過的位置：不再自動對齊安靜處
+    var pinStart = false
+    var pinEnd = false
 }
 
 /// Python 的 round()（銀行家捨入）
@@ -68,7 +99,7 @@ struct Piece {
 public enum Renderer {
     /// 決定要保留的原始片段（只管內容；停頓長短之後由 shapeSilence 依實際音量決定）。
     /// 剪掉的內容合計太短（< minCut）就不剪：多一個剪接點的代價比留下一小段聲音大
-    static func planPieces(_ words: [Word], _ o: RenderOptions, duration: Double) throws -> [Piece] {
+    static func planPieces(_ words: [Word], _ o: RenderOptions, duration: Double, joins: [JoinEdit] = []) throws -> [Piece] {
         let kept = words.filter { $0.action == .keep }
         let cuts = words.filter { $0.action == .cut }
         guard let first = kept.first, let last = kept.last else { throw RenderError.nothingKept }
@@ -76,6 +107,8 @@ public enum Renderer {
         var cur = before.max() ?? 0
         var pieces: [Piece] = []
         var ci = 0
+        // 下一段的開頭是不是固定位置（使用者挪過、或插入停頓切在字與字中間）：不再自動對齊
+        var pinNext = false
         for k in 0..<(kept.count - 1) {
             let A = kept[k], B = kept[k + 1]
             while ci < cuts.count && cuts[ci].end <= A.end + 1e-3 { ci += 1 }
@@ -86,15 +119,38 @@ public enum Renderer {
                 j += 1
             }
             let removed = between.reduce(0.0) { $0 + min($1.end, B.start) - max($1.start, A.end) }
+            let edit = joins.isEmpty ? nil : joins.first { abs($0.after - A.start) < 1e-3 }
+            if let e = edit {
+                // 有微調的接點一定切開（沒剪東西時就是插入停頓，切在兩個字中間）
+                let boundary = TextRules.endsWithPunct(A.text) || A.seg != B.seg
+                var endT: Double, startT: Double
+                let inserted = !(removed >= o.minCut && !between.isEmpty)
+                if !inserted {
+                    endT = A.end + max(0, between.map(\.start).min()! - A.end)
+                    startT = B.start - max(0, B.start - between.map(\.end).max()!)
+                } else {
+                    let mid = (A.end + max(A.end, B.start)) / 2
+                    endT = mid
+                    startT = mid
+                }
+                if e.nudgeEnd != 0 { endT = A.end + e.nudgeEnd }
+                if e.nudgeStart != 0 { startT = B.start + e.nudgeStart }
+                pieces.append(Piece(start: cur, end: max(cur, endT), boundary: boundary, edit: e,
+                                    pinStart: pinNext, pinEnd: inserted || e.nudgeEnd != 0))
+                pinNext = inserted || e.nudgeStart != 0
+                cur = startT
+                continue
+            }
             if removed < o.minCut { continue }
             let lsil = max(0, between.map(\.start).min()! - A.end)
             let rsil = max(0, B.start - between.map(\.end).max()!)
             let boundary = TextRules.endsWithPunct(A.text) || A.seg != B.seg
-            pieces.append(Piece(start: cur, end: A.end + lsil, boundary: boundary))
+            pieces.append(Piece(start: cur, end: A.end + lsil, boundary: boundary, pinStart: pinNext))
+            pinNext = false
             cur = B.start - rsil
         }
         let after = cuts.filter { $0.start >= last.end - 1e-3 }.map(\.start)
-        pieces.append(Piece(start: cur, end: after.min() ?? duration))
+        pieces.append(Piece(start: cur, end: after.min() ?? duration, pinStart: pinNext))
         return pieces
     }
 
@@ -117,14 +173,17 @@ public enum Renderer {
         }
         var ps = pieces
         for i in ps.indices {
-            if i > 0 { ps[i].start = best(ps[i].start, win, 0.01) }
-            if i < ps.count - 1 { ps[i].end = best(ps[i].end, 0.01, win) }
+            if i > 0 && !ps[i].pinStart { ps[i].start = best(ps[i].start, win, 0.01) }
+            if i < ps.count - 1 && !ps[i].pinEnd { ps[i].end = best(ps[i].end, 0.01, win) }
         }
         var merged: [Piece] = []
         for p in ps {
-            if let l = merged.last, p.start <= l.end + 0.01 {
+            // 有微調的接點不合併（插入停頓時前後兩段本來就相連）
+            if let l = merged.last, l.edit == nil, p.start <= l.end + 0.01 {
                 merged[merged.count - 1].end = max(l.end, p.end)
                 merged[merged.count - 1].boundary = p.boundary
+                merged[merged.count - 1].edit = p.edit
+                merged[merged.count - 1].pinEnd = p.pinEnd
             } else {
                 merged.append(p)
             }
@@ -168,15 +227,29 @@ public enum Renderer {
                 }
                 i = j
             }
-            split.append(Piece(start: cur, end: p.end, boundary: p.boundary))
+            split.append(Piece(start: cur, end: p.end, boundary: p.boundary, edit: p.edit))
         }
 
-        var res = split.map { Piece(start: $0.start, end: $0.end) }
+        var res = split.map { Piece(start: $0.start, end: $0.end, edit: $0.edit) }
         if res.isEmpty { return res }
         for i in 0..<(res.count - 1) {  // 2) 剪接處：前段尾巴＋後段開頭的安靜合計
             let tail = run(res[i].end, -1, res[i].end - res[i].start)
             let head = run(res[i + 1].start, 1, res[i + 1].end - res[i + 1].start)
             let J = tail + head
+            if let want = res[i].edit?.pause {
+                // 使用者指定停頓：負數 = 原樣；太長就兩邊平均裁、太短就補底噪（影片不補）
+                if want < 0 { continue }
+                if J > want {
+                    var lt = min(tail, want / 2)
+                    let ht = min(head, want - lt)
+                    lt = min(tail, want - ht)
+                    res[i].end -= tail - lt
+                    res[i + 1].start += head - ht
+                } else if !video {
+                    res[i].fill = want - J
+                }
+                continue
+            }
             if J > o.maxPause {
                 let t = target(J)
                 var lt = min(tail, t / 2)
@@ -235,26 +308,28 @@ public enum Renderer {
     /// 算出要輸出的片段（原檔片段＋合成底噪）。words 須已決定 keep / cut。
     /// fps 不為 nil 時（影片）邊界對齊影格、不補底噪，影音才能同步
     public static func segments(_ words: [Word], analysis a: Analysis, duration: Double, options o: RenderOptions,
-                                fps: Double?, gain: [Float]) throws -> [Seg] {
+                                fps: Double?, gain: [Float], joins: [JoinEdit] = []) throws -> [Seg] {
         if o.maxPause < o.keepPause { throw RenderError.badPause }
         let quiet = a.E.indices.map { a.E[$0] + 20 * log10(gain[$0] + 1e-9) < a.floor + o.quietDb }
-        var pieces = try planPieces(words, o, duration: duration)
+        var pieces = try planPieces(words, o, duration: duration, joins: joins)
         pieces = snapPieces(pieces, E: a.E, hopS: a.hopS, win: o.snap)
         pieces = shapeSilence(pieces, quiet: quiet, hopS: a.hopS, o, video: fps != nil)
         if let fps, fps > 0 {  // 對齊影格，避免多次剪接後影音不同步
             let snap = { (t: Double) in (t * fps).rounded(.toNearestOrEven) / fps }
-            pieces = pieces.map { Piece(start: snap($0.start), end: snap($0.end)) }.filter { $0.end > $0.start }
+            pieces = pieces.map { Piece(start: snap($0.start), end: snap($0.end), edit: $0.edit) }.filter { $0.end > $0.start }
         }
         // 結尾不超過檔案長度；影片要往下取到完整的影格，避免最後一格只有一半
         let maxEnd = fps.map { ($0 > 0 ? (duration * $0 + 1e-9).rounded(.down) / $0 : duration) } ?? duration
-        pieces = pieces.map { Piece(start: max(0, $0.start), end: min(maxEnd, $0.end), fill: $0.fill) }
+        pieces = pieces.map { Piece(start: max(0, $0.start), end: min(maxEnd, $0.end), fill: $0.fill, edit: $0.edit) }
             .filter { $0.end - $0.start > 0.01 }
         if pieces.isEmpty { throw RenderError.nothingKept }
         var segs: [Seg] = []
         for p in pieces {
-            segs.append(Seg(p.start, p.end, .src))
-            if p.fill > 0.005 && a.noise != nil && o.roomtone {
-                segs.append(Seg(0, p.fill, .noise))
+            let fade = p.edit?.fade
+            let fill = p.fill > 0.005 && a.noise != nil && (o.roomtone || p.edit?.pause != nil)
+            segs.append(Seg(p.start, p.end, .src, fadeOut: fade))
+            if fill {
+                segs.append(Seg(0, p.fill, .noise, fadeOut: fade))
             }
         }
         return segs
@@ -273,7 +348,7 @@ public enum Renderer {
         for i in 1..<max(1, segs.count) {
             let p = segs[i - 1], q = segs[i]
             let loud = max(p.kind != .noise ? level(p.end) : a.floor, q.kind != .noise ? level(q.start) : a.floor)
-            let h = loud > a.floor + 20 ? o.xfadeLong : o.xfade
+            let h = p.fadeOut ?? (loud > a.floor + 20 ? o.xfadeLong : o.xfade)
             hs.append(max(1, min(Int(h / 2 * sr), n[i - 1] / 2, n[i] / 2)))
         }
         var tail: [Float] = []

@@ -115,6 +115,50 @@ final class CoreTests: XCTestCase {
         }
     }
 
+    /// 接點微調：指定停頓、原樣、直接切、在兩個字中間插入停頓；沒有微調時結果不變
+    func testJoinEdits() throws {
+        let sr = 16000
+        var x = [Float](repeating: 0, count: sr * 4)
+        var rng = SeededRandom(seed: 3)
+        for i in x.indices { x[i] = Float(rng.normal()) * 0.0005 }
+        for i in 0..<(sr) { x[i] += 0.3 * Float(sin(Double(i) * 0.2)) }                // 0～1 秒：說話
+        for i in (2 * sr)..<(3 * sr) { x[i] += 0.3 * Float(sin(Double(i) * 0.25)) }    // 2～3 秒：說話
+        let src = ArrayPCM(samples: x, sampleRate: sr)
+        let a = Analysis(src: src)
+        let words = [Word(seg: 0, start: 0, end: 0.5, text: "我們"), Word(seg: 0, start: 0.5, end: 1, text: "好。"),
+                     Word(seg: 1, start: 2, end: 3, text: "開始")]
+        let o = RenderOptions()
+        let gain = Renderer.breathGain(a, keepWords: words, margin: o.breathMargin, maxCut: o.breathCut)
+        func render(_ joins: [JoinEdit]) throws -> [Seg] {
+            try Renderer.segments(words, analysis: a, duration: src.duration, options: o, fps: nil, gain: gain, joins: joins)
+        }
+        func len(_ s: [Seg]) -> Double { s.reduce(0) { $0 + $1.length } }
+        let base = try render([])
+        XCTAssertEqual(base, try Renderer.segments(words, analysis: a, duration: src.duration, options: o, fps: nil, gain: gain))
+        XCTAssertTrue(base.allSatisfy { $0.fadeOut == nil })
+
+        // 1 秒的停頓（自動會壓到約 0.3 秒）指定成 1.5 秒：補底噪，總長多約 1.2 秒
+        let longer = try render([JoinEdit(after: 0.5, pause: 1.5)])
+        XCTAssertTrue(longer.contains { $0.kind == .noise })
+        XCTAssertEqual(len(longer) - len(base), 1.2, accuracy: 0.15)
+
+        // 原樣：不壓縮，大約保留原本的 1 秒
+        let asIs = try render([JoinEdit(after: 0.5, pause: -1)])
+        XCTAssertGreaterThan(len(asIs), len(base) + 0.5)
+
+        // 直接切：那個接點的淡化是 0
+        let hard = try render([JoinEdit(after: 0.5, pause: 0.2, fade: 0)])
+        XCTAssertTrue(hard.contains { $0.fadeOut == 0 })
+        var out: [Float] = []
+        _ = try Renderer.synthesize(src, segs: hard, analysis: a, gain: gain, options: o) { out += $0 }
+        XCTAssertTrue(out.allSatisfy { abs($0) <= 1 })
+
+        // 在「我們」和「好」中間（連續說話、沒有剪）插入 0.5 秒停頓
+        let inserted = try render([JoinEdit(after: 0, pause: 0.5)])
+        XCTAssertEqual(len(inserted) - len(base), 0.5, accuracy: 0.1)
+        XCTAssertEqual(inserted.filter { $0.kind == .src }.count, base.filter { $0.kind == .src }.count + 1)
+    }
+
     func testToSourceAndRefineMerge() {
         let segs = [Seg(0, 1, .src), Seg(0, 0.1, .noise), Seg(2, 3, .src)]
         let ts = Renderer.toSource(segs, 0.9, 1.3)

@@ -31,6 +31,8 @@ final class ProjectModel: ObservableObject {
     /// 依目前標記與參數預估的剪後長度（秒）；還沒分析音量時為 nil
     @Published private(set) var estimate: Double?
     private var estimateTask: Task<Void, Never>?
+    /// 使用者對接點的微調（joins.json）
+    @Published private(set) var joins: [JoinEdit] = []
     /// 語者辨識結果（speakers.json）
     @Published private(set) var speakerTurns: [SpeakerTurn] = []
     /// Claude 整理的結果（依種類）
@@ -50,6 +52,7 @@ final class ProjectModel: ObservableObject {
         self.store = store
         plan = (try? load([Word].self, "plan.json")) ?? []
         speakerTurns = (try? load([SpeakerTurn].self, "speakers.json")) ?? []
+        joins = (try? load([JoinEdit].self, "joins.json")) ?? []
         for t in PolishTask.allCases {
             if let text = try? String(contentsOf: url("polish-\(t.rawValue).txt"), encoding: .utf8) { polished[t] = text }
         }
@@ -207,7 +210,8 @@ final class ProjectModel: ObservableObject {
         warmTask?.cancel()
         warmTask = nil
         generation += 1
-        for f in ["words.json", "plan.json", "pcm.f32", "speakers.json"] { try? FileManager.default.removeItem(at: url(f)) }
+        for f in ["words.json", "plan.json", "pcm.f32", "speakers.json", "joins.json"] { try? FileManager.default.removeItem(at: url(f)) }
+        joins = []
         speakerTurns = []
         plan = []
         meta.info = nil
@@ -304,6 +308,138 @@ final class ProjectModel: ObservableObject {
             saveMeta()
             refreshEstimate()
         }
+    }
+
+    // MARK: - 接點微調
+
+    /// 一個接點：前一個保留的字 A 和下一個保留的字 B 之間
+    struct JoinPoint: Identifiable, Equatable {
+        var id: Double { after }
+        /// A 的開始時間（JoinEdit 用這個識別）
+        let after: Double
+        let aEnd: Double
+        let bStart: Double
+        /// 中間有剪掉東西
+        let cut: Bool
+        /// 中間剪掉的秒數
+        let removed: Double
+    }
+
+    /// 要顯示記號的接點：有剪掉東西的地方、保留下來的長停頓（≥ 0.8 秒）、使用者調過的
+    var joinPoints: [JoinPoint] {
+        let ws = decided
+        let minCut = settings.renderOptions.minCut
+        var out: [JoinPoint] = []
+        var lastKept: Word?
+        var removed = 0.0
+        for w in ws {
+            if w.action == .cut {
+                if lastKept != nil { removed += w.end - w.start }
+                continue
+            }
+            if let a = lastKept {
+                let edited = joins.contains { abs($0.after - a.start) < 1e-3 }
+                let cut = removed >= minCut
+                if cut || w.start - a.end >= 0.8 || edited {
+                    out.append(JoinPoint(after: a.start, aEnd: a.end, bStart: w.start, cut: cut, removed: removed))
+                }
+            }
+            lastKept = w
+            removed = 0
+        }
+        return out
+    }
+
+    /// 任意一個保留的字之後的接點（長按「在這之後加停頓」用）；後面沒有保留的字時為 nil
+    func joinPoint(after w: Word) -> JoinPoint? {
+        if let p = joinPoints.first(where: { abs($0.after - w.start) < 1e-3 }) { return p }
+        let ws = decided
+        guard let i = ws.firstIndex(where: { $0.start == w.start && $0.text == w.text }), ws[i].action != .cut else { return nil }
+        guard let b = ws[(i + 1)...].first(where: { $0.action != .cut }) else { return nil }
+        return JoinPoint(after: w.start, aEnd: w.end, bStart: b.start, cut: false, removed: 0)
+    }
+
+    func joinEdit(_ p: JoinPoint) -> JoinEdit {
+        joins.first { abs($0.after - p.after) < 1e-3 } ?? JoinEdit(after: p.after)
+    }
+
+    /// 儲存一個接點的微調（沒有任何調整就刪掉）
+    func setJoin(_ e: JoinEdit) {
+        joins.removeAll { abs($0.after - e.after) < 1e-3 }
+        if !e.isEmpty { joins.append(e) }
+        joins.sort { $0.after < $1.after }
+        try? save(joins, "joins.json")
+        meta.outputStale = meta.outputName != nil
+        saveMeta()
+        refreshEstimate()
+    }
+
+    /// [t0, t1] 的音量（0～1，畫接點聲波用）；還沒分析音量時為空
+    func energy(from t0: Double, to t1: Double, count n: Int) -> [Float] {
+        guard let a = analysis, n > 0, t1 > t0 else { return [] }
+        let top = a.E.max() ?? 0
+        let span = max(1, top - a.floor)
+        return (0..<n).map { k in
+            let i = Int((t0 + (t1 - t0) * (Double(k) + 0.5) / Double(n)) / a.hopS)
+            guard i >= 0, i < a.E.count else { return 0 }
+            return max(0, min(1, (a.E[i] - a.floor) / span))
+        }
+    }
+
+    /// t 附近 ±30 毫秒內有沒有安靜的地方（邊界有沒有對準安靜處）；不知道時為 nil
+    func nearQuiet(_ t: Double) -> Bool? {
+        guard let a = analysis else { return nil }
+        let q = a.floor + settings.renderOptions.quietDb
+        let lo = max(0, Int((t - 0.03) / a.hopS)), hi = min(a.E.count - 1, Int((t + 0.03) / a.hopS))
+        guard hi >= lo else { return nil }
+        return a.E[lo...hi].contains { $0 < q }
+    }
+
+    /// 先在背景載入音量分析（接點面板要畫聲波、試聽）
+    func ensureAnalysisQuietly() async {
+        if analysis != nil, pcm != nil { return }
+        try? await ensureAnalysis()
+    }
+
+    /// 試聽一個接點：用目前的設定（含這個微調）只合成接點前後各約 3 秒，回傳暫存檔
+    func previewJoin(_ e: JoinEdit, at p: JoinPoint) async throws -> URL {
+        try await ensureAnalysis()
+        guard let pcm, let a = analysis, let info = meta.info else { throw MediaError.readFailed("尚未分析") }
+        let words = decided
+        let o = settings.renderOptions
+        var js = joins.filter { abs($0.after - e.after) >= 1e-3 }
+        if !e.isEmpty { js.append(e) }
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("join-\(UUID().uuidString).wav")
+        try await offMainThrowing { () throws in
+            let keep = words.filter { $0.action == .keep }
+            let gain = Renderer.breathGain(a, keepWords: keep, margin: o.breathMargin, maxCut: o.breathCut)
+            let segs = try Renderer.segments(words, analysis: a, duration: min(info.duration, pcm.duration),
+                                             options: o, fps: info.fps, gain: gain, joins: js)
+            // 接點在成品中的位置，取前後各 3 秒
+            let at = Renderer.toOutput(segs, p.bStart) ?? 0
+            let w0 = max(0, at - 3), w1 = at + 3
+            var sub: [Seg] = []
+            var pos = 0.0
+            for s in segs {
+                let a0 = max(w0, pos), a1 = min(w1, pos + s.length)
+                if a1 > a0 {
+                    var c = s
+                    if s.kind == .src {
+                        c.start = s.start + a0 - pos
+                        c.end = s.start + a1 - pos
+                    } else {
+                        c.start = 0
+                        c.end = a1 - a0
+                    }
+                    sub.append(c)
+                }
+                pos += s.length
+            }
+            guard !sub.isEmpty else { throw RenderError.nothingKept }
+            let writer = try AudioFileWriter(url: out, sampleRate: pcm.sampleRate, channels: pcm.channels, wav: true)
+            try Renderer.synthesize(pcm, segs: sub, analysis: a, gain: gain, options: o) { try writer.write($0) }
+        }
+        return out
     }
 
     // MARK: - 只要逐字稿
@@ -546,6 +682,7 @@ final class ProjectModel: ObservableObject {
         guard let a = analysis, let info = meta.info, !plan.isEmpty else { return }
         let words = decided
         let o = settings.renderOptions
+        let joins = joins
         let duration = min(info.duration, pcm?.duration ?? info.duration)
         estimateTask?.cancel()
         estimateTask = Task { [self] in
@@ -554,7 +691,8 @@ final class ProjectModel: ObservableObject {
             let secs = await offMain { () -> Double? in
                 let keep = words.filter { $0.action == .keep }
                 let gain = Renderer.breathGain(a, keepWords: keep, margin: o.breathMargin, maxCut: o.breathCut)
-                let segs = try? Renderer.segments(words, analysis: a, duration: duration, options: o, fps: info.fps, gain: gain)
+                let segs = try? Renderer.segments(words, analysis: a, duration: duration, options: o, fps: info.fps, gain: gain,
+                                                  joins: joins)
                 return segs?.reduce(0) { $0 + $1.length }
             }
             if !Task.isCancelled { estimate = secs }
@@ -843,13 +981,14 @@ final class ProjectModel: ObservableObject {
         guard let pcm, let a = analysis, let info = meta.info else { throw MediaError.readFailed("尚未分析") }
         let words = decided
         let o = settings.renderOptions
+        let joins = joins
         if stepped { enter("cut") }
         say("計算剪接點、停頓與呼吸聲…")
         let (segs, gain) = try await offMainThrowing { () throws -> ([Seg], [Float]) in
             let keep = words.filter { $0.action == .keep }
             let gain = Renderer.breathGain(a, keepWords: keep, margin: o.breathMargin, maxCut: o.breathCut)
             let segs = try Renderer.segments(words, analysis: a, duration: min(info.duration, pcm.duration),
-                                             options: o, fps: info.fps, gain: gain)
+                                             options: o, fps: info.fps, gain: gain, joins: joins)
             return (segs, gain)
         }
         let video = info.isVideo

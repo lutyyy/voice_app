@@ -15,6 +15,9 @@ struct TranscriptEditor: View {
     @State private var renaming: Int?
     @State private var renameText = ""
     @State private var searching = false
+    /// 顯示接點記號（篩選列的「接點」開關）
+    @State private var showJoins = false
+    @State private var joinTarget: ProjectModel.JoinPoint?
     @FocusState private var searchFocused: Bool
     @AppStorage("editorHintSeen") private var hintSeen = false
 
@@ -64,12 +67,15 @@ struct TranscriptEditor: View {
         let all = Self.sentences(words)
         let shown = visible(all)
         let who = model.sentenceSpeaker
+        let points = model.joinPoints
+        // 記號放在接點後面那個字（B）前面
+        let joinAt = showJoins ? Dictionary(points.map { ($0.bStart, $0) }, uniquingKeysWith: { a, _ in a }) : [:]
         ScrollViewReader { proxy in
             List {
                 Section {
                     header(words, all: all, shown: shown, proxy: proxy)
                         .listRowSeparator(.hidden)
-                    chips(all)
+                    chips(all, joins: points.count)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets())
                     if searching {
@@ -83,7 +89,7 @@ struct TranscriptEditor: View {
                         .listRowSeparator(.hidden)
                 }
                 ForEach(shown) { s in
-                    sentenceRow(s, speaker: who[s.id])
+                    sentenceRow(s, speaker: who[s.id], joinAt: joinAt)
                         .id(s.id)
                         .listRowSeparator(.hidden)
                         .swipeActions(edge: .trailing) {
@@ -155,6 +161,7 @@ struct TranscriptEditor: View {
             }
         }
         .animation(.spring(duration: 0.3), value: toast)
+        .sheet(item: $joinTarget) { p in JoinSheet(model: model, point: p, player: player) }
         .onDisappear {
             player.stop()
             hintSeen = true
@@ -264,7 +271,7 @@ struct TranscriptEditor: View {
     }
 
     /// 篩選：膠囊按鈕，後面是句數
-    private func chips(_ all: [Sentence]) -> some View {
+    private func chips(_ all: [Sentence], joins: Int) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(Filter.allCases) { f in
@@ -285,6 +292,21 @@ struct TranscriptEditor: View {
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(filter == f ? .isSelected : [])
                 }
+                Button {
+                    showJoins.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("接點")
+                        Text("\(joins)").monospacedDigit().opacity(0.7)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .foregroundStyle(showJoins ? Color.black : Color.primary)
+                    .background(showJoins ? Color.accentColor : Color.white.opacity(0.1), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showJoins ? "隱藏接點" : "顯示接點，可以調整停頓與銜接")
                 Button {
                     searching.toggle()
                     if !searching { query = "" }
@@ -309,7 +331,7 @@ struct TranscriptEditor: View {
     }
 
     /// 一句：句首灰色小時間（點了從這句開始播）、說話者名字，接著字一個貼一個排
-    private func sentenceRow(_ s: Sentence, speaker: Int?) -> some View {
+    private func sentenceRow(_ s: Sentence, speaker: Int?, joinAt: [Double: ProjectModel.JoinPoint]) -> some View {
         let here = player.playingID == Self.playAllID && playingSentenceID(s)
         return FlowLayout(spacing: 0, lineSpacing: 6) {
             if let sp = speaker {
@@ -347,6 +369,11 @@ struct TranscriptEditor: View {
             .accessibilityLabel(here ? "停止" : "從 \(ProjectModel.clock(s.start)) 開始播放")
             let cur = currentWord(s)
             ForEach(Array(s.words.enumerated()), id: \.offset) { i, w in
+                if w.action != .cut, let jp = joinAt[w.start] {
+                    JoinMarker(point: jp, edited: model.joins.contains { abs($0.after - jp.after) < 1e-3 }) {
+                        joinTarget = jp
+                    }
+                }
                 WordChip(word: w, playing: i == cur) { model.toggle(w, to: w.action == .cut) }
                     .contextMenu { menu(w) }
                     .disabled(model.isBusy)
@@ -374,6 +401,9 @@ struct TranscriptEditor: View {
         Button(cut ? "保留" : "剪掉", systemImage: cut ? "checkmark" : "scissors") { model.toggle(w, to: cut) }
         Button("從這裡播放", systemImage: "play") {
             Self.playAll(model, player, from: max(0, w.start - 0.15), cutOnly: playCut)
+        }
+        if !cut, let jp = model.joinPoint(after: w) {
+            Button("在這之後加停頓／調整接點…", systemImage: "pause.circle") { joinTarget = jp }
         }
         if ProjectModel.isManual(w) {
             Button("還原自動判斷", systemImage: "arrow.uturn.backward") { model.restore(w) }
@@ -545,5 +575,33 @@ struct FlowLayout: Layout {
             x += s.width + spacing
             lineH = max(lineH, s.height)
         }
+    }
+}
+
+/// 接點記號：有剪的地方是 ◆，保留的長停頓是「⏸ 1.2s」；調過的變成實心
+private struct JoinMarker: View {
+    let point: ProjectModel.JoinPoint
+    let edited: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Group {
+                if point.cut {
+                    Text("◆").font(.system(size: 10, weight: .bold))
+                } else {
+                    Text("⏸ " + String(format: "%.1fs", point.bStart - point.aEnd)).font(.caption2.monospacedDigit())
+                }
+            }
+            .foregroundStyle(edited ? Color.black : (point.cut ? Color.accentColor : Color.secondary))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(edited ? Color.accentColor : Color.white.opacity(point.cut ? 0 : 0.1),
+                        in: RoundedRectangle(cornerRadius: 4))
+            .padding(.horizontal, 2)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(point.cut ? "剪接點" : "停頓")
+        .accessibilityHint("點兩下調整停頓與銜接")
     }
 }
