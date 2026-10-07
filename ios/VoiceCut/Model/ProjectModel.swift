@@ -182,9 +182,14 @@ final class ProjectModel: ObservableObject {
     var needsRange: Bool { meta.rangeChosen == false }
 
     /// 選好範圍（nil = 整個檔案）：之前的辨識結果都作廢，從頭處理
-    func setRange(_ r: ClipRange?, fps: Double?, speakers: Int? = nil) {
+    func setRange(_ r: ClipRange?, fps: Double?, choice: StartChoice? = nil) {
         guard !isBusy else { return }
-        if let speakers { meta.speakers = speakers }
+        if let c = choice {
+            meta.speakers = c.speakers
+            meta.transcriptOnly = c.transcriptOnly
+            meta.vocab = c.vocab.isEmpty ? nil : c.vocab
+            meta.mixedLang = c.mixedLang
+        }
         var r = r
         if var x = r, let fps, fps > 0 {  // 影片：開頭對齊影格，畫面才不會差一格
             x.start = (x.start * fps).rounded(.down) / fps
@@ -222,6 +227,10 @@ final class ProjectModel: ObservableObject {
     }
 
     func prepare() {
+        if meta.isTranscript {
+            prepareTranscript()
+            return
+        }
         var list = [("decode", "解碼音訊"), ("analyze", "分析音量與人聲"), ("model", "準備辨識模型"), ("asr", "語音辨識")]
         if settings.gapFill { list.append(("gaps", "檢查漏字")) }
         list.append(("plan", "標記要剪的地方"))
@@ -295,6 +304,155 @@ final class ProjectModel: ObservableObject {
             saveMeta()
             refreshEstimate()
         }
+    }
+
+    // MARK: - 只要逐字稿
+
+    /// 中英夾雜時給模型的提示：示範中文句子裡的英文照寫英文
+    static let mixedPrompt = "我們這個 project 的 deadline 是下週，記得 email 給 team。"
+
+    /// 只要逐字稿：用最準的模型辨識一次，不分析停頓、不補抓、不標記剪輯；專有名詞用同音校正
+    private func prepareTranscript() {
+        var list = [("decode", "讀取音訊"), ("model", "準備辨識模型"), ("asr", "語音辨識")]
+        if wantsSpeakers && speakerTurns.isEmpty { list.append(("diarize", "辨識說話者")) }
+        setSteps(list)
+        run { [self] in
+            if meta.info == nil {
+                var info = try await MediaIO.info(sourceURL)
+                if let r = meta.range { info.duration = min(info.duration, r.end) - r.start }
+                meta.info = info
+                saveMeta()
+            }
+            enter("decode")
+            say("讀取音訊…", 0)
+            let audio = try await MediaIO.decode16k(sourceURL, range: meta.range) { p in
+                Task { @MainActor in self.progress = p }
+            }
+            var words: [Word]
+            if let cached = try? load([Word].self, "words.json") {
+                words = cached
+            } else {
+                enter("model")
+                let model = Transcriber.defaultModel  // 逐字稿一律用這支手機能跑的最準模型
+                try await Transcriber.shared.load(model: model) { p, s in
+                    Task { @MainActor in self.report(p, s) }
+                }
+                enter("asr")
+                say("語音辨識中…", 0)
+                let mixed = meta.mixedLang == true
+                words = try await Transcriber.shared.transcribe(audio, prompt: mixed ? Self.mixedPrompt : nil, progress: { p in
+                    Task { @MainActor in self.progress = p }
+                }, onText: { t in
+                    Task { @MainActor in self.addLive(t) }
+                })
+                if mixed { words = Self.dropEcho(words, of: Self.mixedPrompt) }
+                log.append("辨識出 \(words.count) 個字")
+                if let v = meta.vocab, !v.isEmpty {
+                    let n = VocabFix.apply(&words, vocab: v)
+                    if n > 0 { log.append("專有名詞校正 \(n) 處") }
+                }
+                try save(words, "words.json")
+            }
+            var p = words.map { w -> Word in
+                var w = w
+                w.action = .keep
+                w.reason = ""
+                return w
+            }
+            Review.mergeShortSentences(&p)
+            if wantsSpeakers && speakerTurns.isEmpty {
+                enter("diarize")
+                say("辨識說話者（第一次會下載模型）…", 0)
+                let n = meta.speakers ?? 0
+                speakerTurns = try await Diarizer.run(audio, speakers: n >= 2 ? n : nil) { p in
+                    Task { @MainActor in self.progress = p }
+                }
+                try save(speakerTurns, "speakers.json")
+                log.append("辨識出 \(speakerCount) 位說話者")
+            }
+            p = withSpeakers(p)
+            plan = p
+            try save(p, "plan.json")
+            saveMeta()
+        }
+    }
+
+    /// 模型把提示詞原封不動寫進逐字稿時拿掉
+    static func dropEcho(_ words: [Word], of prompt: String) -> [Word] {
+        let target = TextRules.norm(prompt)
+        guard !target.isEmpty else { return words }
+        var out = words
+        var i = 0
+        while i < out.count {
+            var acc = ""
+            var j = i
+            while j < out.count, acc.count < target.count {
+                acc += TextRules.norm(out[j].text)
+                j += 1
+            }
+            if acc == target {
+                out.removeSubrange(i..<j)
+            } else {
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// 一定是語助詞（嗯、呃…）：逐字稿可以選擇去掉
+    nonisolated static func isFiller(_ w: Word) -> Bool {
+        let n = TextRules.norm(w.text)
+        return !n.isEmpty && TextRules.sureFillers.contains(n)
+    }
+
+    /// 模型沒把握的字：建議核對
+    nonisolated static func needsCheck(_ w: Word) -> Bool {
+        w.edited == nil && (w.prob ?? 1) < 0.5
+    }
+
+    /// 逐字稿專案改成剪輯專案：保留辨識結果（含改過的錯字），接著分析停頓、標記要剪的地方
+    func convertToEdit() {
+        guard !isBusy, meta.isTranscript else { return }
+        if var words = try? load([Word].self, "words.json") {
+            var edits: [String: String] = [:]
+            for w in plan { if let e = w.edited { edits["\(w.start)|\(w.text)"] = e } }
+            for i in words.indices { words[i].edited = edits["\(words[i].start)|\(words[i].text)"] ?? words[i].edited }
+            try? save(words, "words.json")
+        }
+        meta.transcriptOnly = false
+        plan = []
+        undoStack = []
+        redoStack = []
+        saveMeta()
+        stage = .idle
+        prepare()
+    }
+
+    /// 逐字稿匯出：去掉語助詞（可選）後產生 TXT／SRT
+    func transcriptFiles(dropFillers: Bool, timestamps: Bool) throws -> [URL] {
+        let dir = url("export")
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let ws = plan.filter { !(dropFillers && Self.isFiller($0)) && $0.text != "～" }
+        let sp = speakerTurns.isEmpty ? nil : Subtitles.speakers(for: ws, turns: speakerTurns)
+        let names: (Int) -> String = { [self] in speakerName($0) }
+        let name = meta.displayName.replacingOccurrences(of: "/", with: "-")
+        let files: [(String, String)] = [
+            ("\(name).txt", Subtitles.text(ws, speakers: sp, timestamps: timestamps, names: names)),
+            ("\(name).srt", Subtitles.srt(Subtitles.cues(ws, speakers: sp), names: names)),
+        ]
+        return try files.map { f, text in
+            let u = dir.appendingPathComponent(f)
+            try text.write(to: u, atomically: true, encoding: .utf8)
+            return u
+        }
+    }
+
+    /// 複製用的純文字
+    func transcriptText(dropFillers: Bool, timestamps: Bool) -> String {
+        let ws = plan.filter { !(dropFillers && Self.isFiller($0)) && $0.text != "～" }
+        let sp = speakerTurns.isEmpty ? nil : Subtitles.speakers(for: ws, turns: speakerTurns)
+        return Subtitles.text(ws, speakers: sp, timestamps: timestamps, names: { [self] in speakerName($0) })
     }
 
     /// 開啟已處理過的專案時，在背景載入音量分析（不顯示處理畫面），

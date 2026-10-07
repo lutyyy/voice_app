@@ -10,7 +10,7 @@ struct RangeSelectView: View {
     /// 第一次選（新匯入的檔案）：取消時可以選擇刪掉這個專案
     let firstTime: Bool
     /// 範圍、影格率、說話人數（只有第一次選時有：1 = 一個人、0 = 自動、2 以上 = 指定）
-    let onDone: (ClipRange?, Double?, Int?) -> Void
+    let onDone: (ClipRange?, Double?, StartChoice?) -> Void
     /// 第一次選時按「取消 › 刪除這個專案」
     var onDiscard: () -> Void = {}
 
@@ -34,6 +34,10 @@ struct RangeSelectView: View {
     /// 說話人數：記住上次選的
     @AppStorage("lastSpeakers") private var speakers = 1
     @AppStorage("rangeHintSeen") private var hintSeen = false
+    /// 剪輯或只要逐字稿、專有名詞、中英夾雜：都記住上次的選擇
+    @AppStorage("lastTranscriptOnly") private var transcriptOnly = false
+    @AppStorage("lastVocab") private var vocabText = ""
+    @AppStorage("lastMixedLang") private var mixedLang = false
     @EnvironmentObject private var settings: AppSettings
     @State private var showOptions = false
     @State private var tuneSpeed = false
@@ -57,6 +61,13 @@ struct RangeSelectView: View {
                         } else if info == nil {
                             ProgressView("讀取檔案…").frame(maxWidth: .infinity).padding(.top, 30)
                         } else {
+                            if firstTime {
+                                Picker("要做什麼", selection: $transcriptOnly) {
+                                    Text("剪輯").tag(false)
+                                    Text("只要逐字稿").tag(true)
+                                }
+                                .pickerStyle(.segmented)
+                            }
                             times
                             if zoom > 1.01 {
                                 Overview(peaks: peaks, duration: duration, start: start, end: end,
@@ -311,7 +322,18 @@ struct RangeSelectView: View {
     }
 
     private var startTitle: String {
-        isWhole ? "處理整個檔案" : "處理選取的 \(ProjectModel.clock(end - start))"
+        if firstTime && transcriptOnly {
+            return isWhole ? "產生逐字稿" : "產生逐字稿（\(ProjectModel.clock(end - start))）"
+        }
+        return isWhole ? "處理整個檔案" : "處理選取的 \(ProjectModel.clock(end - start))"
+    }
+
+    /// 專有名詞：用逗號、頓號、空白或換行分開
+    private var vocabList: [String] {
+        guard transcriptOnly else { return [] }
+        return vocabText.components(separatedBy: CharacterSet(charactersIn: "，,、;；\n ")).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty }
     }
 
     /// 人數、速度、風格收成一行，點開再改
@@ -343,6 +365,12 @@ struct RangeSelectView: View {
         case 1: who = "1 人"
         default: who = "\(speakers) 人"
         }
+        if transcriptOnly {
+            var parts = [who, "最準模型"]
+            if !vocabList.isEmpty { parts.append("\(vocabList.count) 個專有名詞") }
+            if mixedLang { parts.append("中英夾雜") }
+            return parts.joined(separator: " · ")
+        }
         return [who, settings.speed?.name ?? "自訂速度", settings.preset?.name ?? "自訂風格"].joined(separator: " · ")
     }
 
@@ -362,17 +390,11 @@ struct RangeSelectView: View {
                     Text(speakers == 1 ? "單人口說、Vlog。" : "訪談、對談、會議：逐字稿會標出誰在說話（第一次要下載語者辨識模型，請連 Wi‑Fi）。")
                         .font(.caption).foregroundStyle(.secondary)
 
-                    Text("處理速度").font(.subheadline.weight(.semibold)).padding(.top, 8)
-                    SpeedPicker { tuneSpeed = true }
-                    tuneLink(settings.speed?.note ?? "已自訂辨識模型、漏字補抓與補剪", title: "微調辨識設定") { tuneSpeed = true }
-
-                    Text("剪輯風格").font(.subheadline.weight(.semibold)).padding(.top, 8)
-                    PresetPicker { tuneCut = true }
-                    tuneLink(settings.preset?.note ?? "已自訂停頓、拖音與剪接參數", title: "微調剪輯參數") { tuneCut = true }
+                    if transcriptOnly { transcriptOptions } else { editOptions }
                 }
                 .padding()
             }
-            .navigationTitle("處理設定")
+            .navigationTitle(transcriptOnly ? "逐字稿設定" : "處理設定")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { showOptions = false } }
@@ -381,6 +403,38 @@ struct RangeSelectView: View {
             .navigationDestination(isPresented: $tuneCut) { CutSettingsView() }
         }
         .presentationDetents([.large])
+    }
+
+    /// 只要逐字稿：專有名詞、中英夾雜
+    @ViewBuilder
+    private var transcriptOptions: some View {
+        Text("專有名詞").font(.subheadline.weight(.semibold)).padding(.top, 8)
+        TextField("例如：探針卡、藍湖策略、王子建", text: $vocabText, axis: .vertical)
+            .lineLimit(2...5)
+            .padding(10)
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        Text("人名、公司、術語，用逗號分開。辨識完會把讀音相同的錯字改成這些寫法（改過的字可以還原）。")
+            .font(.caption).foregroundStyle(.secondary)
+        Toggle("中英夾雜", isOn: $mixedLang)
+            .font(.subheadline.weight(.semibold))
+            .padding(.top, 8)
+        Text("內容常有英文時打開，英文會盡量保留英文；偶爾可能整句被寫成英文。")
+            .font(.caption).foregroundStyle(.secondary)
+        Text("逐字稿一律使用這支手機上最準的辨識模型，不做剪輯相關的分析。")
+            .font(.caption).foregroundStyle(.secondary)
+            .padding(.top, 8)
+    }
+
+    /// 剪輯：速度與剪輯風格
+    @ViewBuilder
+    private var editOptions: some View {
+        Text("處理速度").font(.subheadline.weight(.semibold)).padding(.top, 8)
+        SpeedPicker { tuneSpeed = true }
+        tuneLink(settings.speed?.note ?? "已自訂辨識模型、漏字補抓與補剪", title: "微調辨識設定") { tuneSpeed = true }
+
+        Text("剪輯風格").font(.subheadline.weight(.semibold)).padding(.top, 8)
+        PresetPicker { tuneCut = true }
+        tuneLink(settings.preset?.note ?? "已自訂停頓、拖音與剪接參數", title: "微調剪輯參數") { tuneCut = true }
     }
 
     /// 說明＋「微調…」連結
@@ -461,7 +515,8 @@ struct RangeSelectView: View {
     private func finish(_ r: ClipRange?) {
         stop()
         hintSeen = true
-        onDone(r, info?.fps, firstTime ? speakers : nil)
+        onDone(r, info?.fps, firstTime ? StartChoice(speakers: speakers, transcriptOnly: transcriptOnly,
+                                                     vocab: vocabList, mixedLang: transcriptOnly && mixedLang) : nil)
         dismiss()
     }
 

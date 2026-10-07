@@ -220,6 +220,8 @@ private struct ProjectRow: View {
             StatusBadge(text: "未處理", color: .orange)
         } else if case .failed? = model?.stage {
             StatusBadge(text: "失敗", color: .red)
+        } else if meta.isTranscript {
+            StatusBadge(text: "逐字稿", color: .secondary)
         } else if let o = meta.outputDuration, !meta.outputStale,
                   let d = meta.range.map({ $0.end - $0.start }) ?? meta.info?.duration, d > 0 {
             StatusBadge(text: "−\(Int(((1 - o / d) * 100).rounded()))%", color: .accentColor)

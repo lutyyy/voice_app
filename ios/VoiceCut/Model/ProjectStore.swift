@@ -27,8 +27,24 @@ struct ProjectMeta: Codable, Identifiable, Equatable {
     var speakerNames: [String]?
     /// 開始前選的說話人數：nil 或 1 = 一個人（不辨識說話者）、0 = 自動判斷、2 以上 = 指定人數
     var speakers: Int?
+    /// 只要逐字稿（不剪輯）：只辨識，不分析停頓、不標記要剪的地方
+    var transcriptOnly: Bool?
+    /// 專有名詞：辨識完把同音的錯字改成這些寫法
+    var vocab: [String]?
+    /// 中英夾雜：英文盡量保留英文
+    var mixedLang: Bool?
 
     var displayName: String { (name as NSString).deletingPathExtension }
+    var isTranscript: Bool { transcriptOnly == true }
+}
+
+/// 新專案開始處理前的選擇（選範圍頁傳給專案）
+struct StartChoice {
+    /// 1 = 一個人、0 = 自動、2 以上 = 指定
+    var speakers: Int
+    var transcriptOnly: Bool
+    var vocab: [String]
+    var mixedLang: Bool
 }
 
 /// 專案清單

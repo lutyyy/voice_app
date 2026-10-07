@@ -18,6 +18,10 @@ struct ProjectView: View {
     @State private var showAsk = false
     @State private var discard = false
     @State private var confirmCancel = false
+    @State private var copied = false
+    @State private var showTranscriptExport = false
+    @State private var confirmConvert = false
+    @AppStorage("transcriptDropFillers") private var dropFillers = true
     @StateObject private var player = ClipPlayer()
     /// 播放鍵：剪後（跳過剪掉的字）或原音；長按切換
     @AppStorage("playCut") private var playCut = true
@@ -27,7 +31,7 @@ struct ProjectView: View {
             .navigationTitle(model.meta.displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if !model.plan.isEmpty {
+                if !model.plan.isEmpty && !model.meta.isTranscript {
                     ToolbarItem(placement: .topBarTrailing) { aiMenu }
                 }
                 if model.plan.isEmpty && model.isBusy {
@@ -48,6 +52,13 @@ struct ProjectView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showLog) { LogView(lines: model.log) }
             .sheet(isPresented: $showAsk) { AskAppSheet(model: model) }
+            .sheet(isPresented: $showTranscriptExport) { TranscriptExportSheet(model: model, dropFillers: dropFillers) }
+            .confirmationDialog("改成剪輯專案？", isPresented: $confirmConvert, titleVisibility: .visible) {
+                Button("改成剪輯專案") { model.convertToEdit() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("不用重新辨識：會接著分析停頓、標記語助詞，之後就可以剪輯。改過的錯字會保留。")
+            }
             .sheet(isPresented: $showExport) {
                 ExportSheet(model: model) {
                     // 等匯出畫面收起來再推進下一頁，否則推不進去
@@ -56,7 +67,7 @@ struct ProjectView: View {
             }
             .sheet(isPresented: $showRange, onDismiss: rangeDismissed) {
                 RangeSelectView(url: model.sourceURL, initial: model.meta.range, firstTime: model.needsRange,
-                                onDone: { r, fps, n in model.setRange(r, fps: fps, speakers: n) },
+                                onDone: { r, fps, c in model.setRange(r, fps: fps, choice: c) },
                                 onDiscard: { discard = true })
             }
             .alert("提示", isPresented: Binding(get: { model.notice != nil && !showExport && !showAsk },
@@ -96,13 +107,66 @@ struct ProjectView: View {
                 .padding()
             }
         } else {
-            TranscriptEditor(model: model, player: player, playCut: playCut)
+            if model.meta.isTranscript {
+                TranscriptDocView(model: model, player: player)
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if model.isBusy { busyBanner }
+                    }
+                    .safeAreaInset(edge: .bottom, spacing: 0) { transcriptBar }
+            } else {
+                editor
+            }
+        }
+    }
+
+    private var editor: some View {
+        TranscriptEditor(model: model, player: player, playCut: playCut)
                 .safeAreaInset(edge: .top, spacing: 0) {
                     // 輸出以外的工作（Claude 判斷、辨識說話者…）在這裡顯示進度
                     if model.isBusy && !showExport { busyBanner }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
+    }
+
+    /// 逐字稿專案的底部：播放（原音）、複製全部、匯出
+    private var transcriptBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                if playing {
+                    player.stop()
+                } else {
+                    TranscriptEditor.playAll(model, player, from: player.lastTime ?? 0, cutOnly: false)
+                }
+            } label: {
+                Image(systemName: playing ? "pause.fill" : "play.fill")
+                    .font(.title3)
+                    .foregroundStyle(.black)
+                    .frame(width: 44, height: 44)
+                    .background(Color.white, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isBusy)
+            .accessibilityLabel(playing ? "暫停" : "播放")
+            Spacer(minLength: 4)
+            Button {
+                UIPasteboard.general.string = model.transcriptText(dropFillers: dropFillers, timestamps: false)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+            } label: {
+                Label(copied ? "已複製" : "複製全部", systemImage: copied ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(PillButtonStyle(prominent: false))
+            Button {
+                showTranscriptExport = true
+            } label: {
+                Label("匯出", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(PillButtonStyle())
         }
+        .font(.body.weight(.medium))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.bar)
     }
 
     // MARK: - 還沒有逐字稿
@@ -294,7 +358,12 @@ struct ProjectView: View {
 
     private var moreMenu: some View {
         Menu {
-            if !model.plan.isEmpty {
+            if model.meta.isTranscript {
+                if !model.plan.isEmpty {
+                    Button("改成剪輯專案", systemImage: "scissors") { confirmConvert = true }
+                        .disabled(model.isBusy)
+                }
+            } else if !model.plan.isEmpty {
                 Button("字幕、逐字稿、說話者", systemImage: "captions.bubble") { showSubtitles = true }
                 Button("微調剪輯參數", systemImage: "slider.horizontal.3") { showCutSettings = true }
             }
@@ -541,6 +610,52 @@ private struct LogView: View {
                     .accessibilityLabel("複製全部")
                 }
             }
+        }
+    }
+}
+
+/// 逐字稿匯出：TXT（可選帶時間）、SRT
+private struct TranscriptExportSheet: View {
+    @ObservedObject var model: ProjectModel
+    let dropFillers: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var timestamps = false
+    @State private var files: [URL] = []
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("每句加上時間", isOn: $timestamps)
+                    ForEach(files, id: \.self) { f in
+                        ShareLink(item: f) {
+                            Label(f.pathExtension == "srt" ? "字幕檔（SRT）" : "逐字稿（TXT）",
+                                  systemImage: f.pathExtension == "srt" ? "captions.bubble" : "doc.plaintext")
+                        }
+                    }
+                    if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                } footer: {
+                    Text(dropFillers ? "已去掉「嗯、呃」。要保留原話，回逐字稿頁關掉「去掉嗯呃」。" : "保留原話（含「嗯、呃」）。")
+                }
+            }
+            .navigationTitle("匯出逐字稿")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+            }
+            .onAppear(perform: refresh)
+            .onChange(of: timestamps) { _, _ in refresh() }
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func refresh() {
+        do {
+            files = try model.transcriptFiles(dropFillers: dropFillers, timestamps: timestamps)
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 }
