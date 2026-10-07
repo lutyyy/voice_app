@@ -1,0 +1,3 @@
+/* 桌面上顯示的 App 名稱 */
+"CFBundleDisplayName" = "語音剪輯";
+"CFBundleName" = "語音剪輯";

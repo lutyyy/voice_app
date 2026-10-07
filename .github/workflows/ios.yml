@@ -1,0 +1,161 @@
+name: iOS App
+
+on:
+  push:
+    branches: [main]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  pull_request:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    name: 剪輯邏輯單元測試（Linux）
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift test
+        working-directory: ios/AutoCutCore
+        run: swift test
+
+  e2e:
+    name: 實際辨識測試（Mac，用合成中文語音）
+    needs: core-tests
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: 選用最新的 Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: 產生測試音檔（macOS 內建中文語音）
+        working-directory: ios/E2E
+        run: |
+          say -v '?' | grep -Ei 'zh_|chinese' || true
+          VOICE=Tingting
+          TEXT="嗯，大家好，今天我們要來談談數位轉型。呃，其實數位轉型不只是買新的系統，而是要改變做事的方法。然後，那個，我們先看看第一個例子。這家公司原本都用紙本作業，後來全部改成線上流程，效率提升了很多。欸，第二個例子比較有趣，他們用資料來決定要開發什麼產品。"
+          say -v "$VOICE" -o speech.aiff "$TEXT"
+          afinfo speech.aiff | grep -E "duration|Data format"
+          afconvert -f m4af -d aac@44100 -b 96000 speech.aiff test.m4a
+          afconvert -f m4af -d aac@16000 -c 1 speech.aiff test16k.m4a || true
+          afinfo test.m4a | grep -E "duration|Data format"
+      - name: 加入 App 的程式碼
+        working-directory: ios
+        run: cp VoiceCut/Services/MediaIO.swift VoiceCut/Services/Transcriber.swift E2E/Sources/E2E/
+      - name: 編譯
+        working-directory: ios/E2E
+        run: swift build -c release
+      - name: 整個檔案（Large v3 Turbo）
+        working-directory: ios/E2E
+        run: .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB
+      - name: 只處理一段（Large v3 Turbo，5～20 秒）
+        working-directory: ios/E2E
+        # 第二次載入同一個模型：要直接用已下載的檔案，不能再下載
+        run: |
+          set -o pipefail
+          .build/release/E2E test.m4a openai_whisper-large-v3-v20240930_626MB 5 20 | tee out.txt
+          if grep -q "下載辨識模型" out.txt; then echo "❌ 已下載的模型又重新下載"; exit 1; fi
+      - name: 16kHz 單聲道錄音的一段（Large v3 Turbo）
+        working-directory: ios/E2E
+        run: .build/release/E2E test16k.m4a openai_whisper-large-v3-v20240930_626MB 3 15
+      - name: 整個檔案（Tiny，舊手機用）
+        working-directory: ios/E2E
+        run: .build/release/E2E test.m4a openai_whisper-tiny
+
+  build-app:
+    name: 編譯 iOS App（產生未簽章 IPA）
+    # 實際辨識測試沒過就不發布，避免把辨識不出字的版本推給 SideStore
+    needs: [core-tests, e2e]
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      # 每次編譯版本號遞增，SideStore 才會偵測到「有更新」
+      APP_VERSION: 1.0.${{ github.run_number }}
+      APP_BUILD: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 選用最新的 Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+      - name: 安裝 XcodeGen 並產生專案
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: 快取 Swift 套件
+        uses: actions/cache@v4
+        with:
+          path: ios/build/SourcePackages
+          key: spm-${{ hashFiles('ios/project.yml') }}
+      - name: 編譯（不簽章）
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project VoiceCut.xcodeproj -scheme VoiceCut -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build -clonedSourcePackagesDirPath build/SourcePackages \
+            MARKETING_VERSION="$APP_VERSION" CURRENT_PROJECT_VERSION="$APP_BUILD" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tee build.log | grep -E "error:|warning: .*VoiceCut|BUILD (SUCCEEDED|FAILED)" || true
+          # 編譯失敗時 .app 資料夾仍可能存在（只有資源、沒有主程式），一定要確認主程式有產生
+          if grep -q "BUILD FAILED" build.log; then grep -E "error:" build.log | sort -u | head -50; exit 1; fi
+          test -f build/Build/Products/Release-iphoneos/VoiceCut.app/VoiceCut
+      - name: 檢查 App 名稱（SideStore 只接受英文的 App ID 名稱）
+        working-directory: ios
+        run: |
+          APP=build/Build/Products/Release-iphoneos/VoiceCut.app
+          NAME=$(plutil -extract CFBundleDisplayName raw "$APP/Info.plist")
+          echo "CFBundleDisplayName=$NAME"
+          echo "$NAME" | LC_ALL=C grep -qE '^[A-Za-z0-9 ]+$'
+          find "$APP" -name InfoPlist.strings
+          test -f "$APP/zh-Hant.lproj/InfoPlist.strings"
+          test "$(plutil -extract CFBundleShortVersionString raw "$APP/Info.plist")" = "$APP_VERSION"
+      - name: 打包 IPA
+        working-directory: ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/VoiceCut.app Payload/
+          test -f Payload/VoiceCut.app/VoiceCut
+          zip -qry VoiceCut-unsigned.ipa Payload
+          ls -lh VoiceCut-unsigned.ipa
+      - name: 發布新版（SideStore 來源）
+        # 只在本 repo 的分支發布（fork 來的 PR 沒有寫入權限）；PR 上要 commit 訊息含「[發布]」
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        working-directory: ios
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # PR 上的推送只有 commit 訊息含「[發布]」才發新版（避免每次改動都要使用者更新、重新準備模型）；
+          # 手動執行（workflow_dispatch）或推到 main 一律發布
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            msg=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA" --jq .commit.message)
+            case "$msg" in
+              *"[發布]"*) ;;
+              *) echo "commit 訊息沒有「[發布]」，這次不發布（IPA 仍會上傳成 artifact）"; exit 0 ;;
+            esac
+          fi
+          cp VoiceCut-unsigned.ipa VoiceCut.ipa
+          python3 scripts/make_source.py VoiceCut.ipa "$APP_VERSION" "$APP_BUILD" "$SHA" source.json
+          gh release create "build-$APP_BUILD" VoiceCut.ipa source.json \
+            --target "$SHA" --latest \
+            --title "語音剪輯 $APP_VERSION" \
+            --notes "SideStore 來源：https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/source.json"
+          # 只保留最近 5 個版本（兩次編譯同時在刪舊版時可能已被另一次刪掉，失敗不影響發布）
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^build-' | sort -t- -k2 -n -r \
+            | tail -n +6 | while read -r t; do gh release delete "$t" --yes --cleanup-tag || true; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoiceCut-unsigned-ipa
+          path: ios/VoiceCut-unsigned.ipa
+          retention-days: 30
+      - name: 上傳編譯紀錄（失敗時）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ios/build.log
