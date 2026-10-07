@@ -53,6 +53,7 @@ final class ProjectModel: ObservableObject {
         plan = (try? load([Word].self, "plan.json")) ?? []
         speakerTurns = (try? load([SpeakerTurn].self, "speakers.json")) ?? []
         joins = (try? load([JoinEdit].self, "joins.json")) ?? []
+        runs = (try? load([RunRecord].self, "runs.json")) ?? []
         for t in PolishTask.allCases {
             if let text = try? String(contentsOf: url("polish-\(t.rawValue).txt"), encoding: .utf8) { polished[t] = text }
         }
@@ -83,10 +84,69 @@ final class ProjectModel: ObservableObject {
     // MARK: - 狀態
 
     private func say(_ s: String, _ p: Double? = nil) {
+        if isBusy && s != phaseTitle {
+            closePhase()
+            phaseTitle = s
+            phaseStart = Date()
+        }
         step = s
         stepStarted = Date()
         progress = p
         log.append(s)
+    }
+
+    // MARK: - 處理時間紀錄
+
+    /// 每次處理的時間紀錄（runs.json，最新的在前面）
+    @Published private(set) var runs: [RunRecord] = []
+    private var runStart = Date()
+    private var runPhases: [RunRecord.Phase] = []
+    private var phaseTitle: String?
+    private var phaseStart: Date?
+
+    private func closePhase() {
+        guard let t = phaseTitle, let a = phaseStart else { return }
+        let secs = Date().timeIntervalSince(a)
+        let title = t.trimmingCharacters(in: CharacterSet(charactersIn: "…．. "))
+        if let last = runPhases.last, last.title == title {
+            runPhases[runPhases.count - 1].seconds += secs
+        } else if secs >= 0.05 {
+            runPhases.append(RunRecord.Phase(title: title, seconds: secs))
+        }
+        phaseTitle = nil
+        phaseStart = nil
+    }
+
+    private func beginRun() {
+        runStart = Date()
+        runPhases = []
+        phaseTitle = nil
+        phaseStart = nil
+    }
+
+    /// 這次處理做了什麼（依步驟判斷）
+    private var runKind: String {
+        let ids = Set(steps.map(\.id))
+        if ids.contains("asr") { return meta.isTranscript ? "產生逐字稿" : "辨識與標記" }
+        if ids.contains("cut") { return "匯出" }
+        if ids.contains("claude") { return "Claude" }
+        if ids.contains("diarize") { return "辨識說話者" }
+        if ids.contains("plan") { return "標記" }
+        return "處理"
+    }
+
+    private func endRun(_ status: String) {
+        closePhase()
+        let usedModel = steps.contains(where: { $0.id == "model" })
+        let modelName: String? = usedModel ? (meta.isTranscript ? Transcriber.defaultModel : settings.resolvedModel) : nil
+        let r = RunRecord(date: runStart, kind: runKind, status: status, total: Date().timeIntervalSince(runStart),
+                          media: meta.info?.duration,
+                          model: modelName,
+                          speed: meta.isTranscript ? nil : settings.speed?.name,
+                          device: RunRecord.deviceName, phases: runPhases)
+        runs.insert(r, at: 0)
+        if runs.count > 50 { runs.removeLast(runs.count - 50) }
+        try? save(runs, "runs.json")
     }
 
     /// 給 Transcriber 等回報進度用：nan 代表無法估計，畫面改成轉圈圈
@@ -149,6 +209,7 @@ final class ProjectModel: ObservableObject {
     private func run(_ work: @escaping () async throws -> Void) {
         guard !isBusy else { return }
         stage = .working
+        beginRun()
         UIApplication.shared.isIdleTimerDisabled = true
         let bg = BackgroundWork.shared
         bg.begin(title: meta.displayName)
@@ -156,15 +217,18 @@ final class ProjectModel: ObservableObject {
             do {
                 try await work()
                 finishSteps()
+                endRun("完成")
                 stage = .ready
                 step = ""
                 progress = nil
                 bg.end(success: true, message: "處理好了，點這裡回到 App 查看")
             } catch is CancellationError {
+                endRun("已取消")
                 stage = plan.isEmpty ? .idle : .ready
                 say("已取消")
                 bg.end(success: false, message: "已取消")
             } catch {
+                endRun("失敗")
                 stage = plan.isEmpty ? .failed(error.localizedDescription) : .ready
                 notice = error.localizedDescription
                 log.append("錯誤：\(error.localizedDescription)")
@@ -1209,6 +1273,57 @@ func offMain<T>(_ work: @escaping () -> T) async -> T {
 }
 
 /// 處理流程中的一個步驟
+/// 一次處理的時間紀錄：每一段花多久、總共多久、音訊多長
+struct RunRecord: Codable, Identifiable, Equatable {
+    struct Phase: Codable, Equatable {
+        var title: String
+        var seconds: Double
+    }
+    var id: Date { date }
+    var date: Date
+    var kind: String
+    var status: String
+    var total: Double
+    /// 處理的音訊長度（秒）
+    var media: Double?
+    var model: String?
+    var speed: String?
+    var device: String?
+    var phases: [Phase]
+
+    /// 處理時間是音訊長度的幾倍（0.25 = 1 分鐘的音訊花 15 秒）
+    var ratio: Double? { media.flatMap { $0 > 0 ? total / $0 : nil } }
+
+    /// 例如 iPhone15,2
+    static var deviceName: String {
+        var info = utsname()
+        uname(&info)
+        return withUnsafeBytes(of: &info.machine) { buf in
+            String(decoding: buf.prefix { $0 != 0 }, as: UTF8.self)
+        }
+    }
+
+    /// 複製用的文字
+    var text: String {
+        var lines = ["\(kind)（\(status)） \(date.formatted(date: .abbreviated, time: .shortened))"]
+        var head = "共 " + ProjectModel.clock(total)
+        if let m = media { head += "，音訊 " + ProjectModel.clock(m) }
+        if let r = ratio { head += String(format: "（%.2f 倍時長）", r) }
+        lines.append(head)
+        var extra: [String] = []
+        if let model { extra.append("模型 " + model) }
+        if let speed { extra.append("速度 " + speed) }
+        if let device { extra.append(device) }
+        if !extra.isEmpty { lines.append(extra.joined(separator: " · ")) }
+        for p in phases { lines.append("  " + p.title + "：" + RunRecord.short(p.seconds)) }
+        return lines.joined(separator: "\n")
+    }
+
+    static func short(_ t: Double) -> String {
+        t < 60 ? String(format: "%.1f 秒", t) : ProjectModel.clock(t)
+    }
+}
+
 struct PipelineStep: Identifiable, Equatable {
     enum State { case pending, running, done }
     let id: String

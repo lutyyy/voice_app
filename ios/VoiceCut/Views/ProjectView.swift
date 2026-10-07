@@ -50,7 +50,7 @@ struct ProjectView: View {
             .navigationDestination(isPresented: $showSubtitles) { ExportView(model: model) }
             .navigationDestination(isPresented: $showCutSettings) { CutSettingsView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
-            .sheet(isPresented: $showLog) { LogView(lines: model.log) }
+            .sheet(isPresented: $showLog) { LogView(lines: model.log, runs: model.runs) }
             .sheet(isPresented: $showAsk) { AskAppSheet(model: model) }
             .sheet(isPresented: $showTranscriptExport) { TranscriptExportSheet(model: model, dropFillers: dropFillers) }
             .confirmationDialog("改成剪輯專案？", isPresented: $confirmConvert, titleVisibility: .visible) {
@@ -374,8 +374,8 @@ struct ProjectView: View {
                     .disabled(model.isBusy)
             }
             Section {
-                if !model.log.isEmpty {
-                    Button("處理紀錄", systemImage: "list.bullet.rectangle") { showLog = true }
+                if !model.log.isEmpty || !model.runs.isEmpty {
+                    Button("處理紀錄與時間", systemImage: "list.bullet.rectangle") { showLog = true }
                 }
                 Button("設定", systemImage: "gearshape") { showSettings = true }
             }
@@ -592,25 +592,75 @@ private struct AskAppSheet: View {
 /// 處理紀錄
 private struct LogView: View {
     let lines: [String]
+    let runs: [RunRecord]
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            List(Array(lines.enumerated()), id: \.offset) { _, line in
-                Text(line).font(.footnote).textSelection(.enabled)
+            List {
+                if !runs.isEmpty {
+                    Section("處理時間") {
+                        ForEach(runs) { r in run(r) }
+                    }
+                }
+                if !lines.isEmpty {
+                    Section("這次開啟的詳細紀錄") {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                            Text(line).font(.footnote).textSelection(.enabled)
+                        }
+                    }
+                }
             }
             .navigationTitle("處理紀錄")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { UIPasteboard.general.string = lines.joined(separator: "\n") } label: {
+                    Button {
+                        UIPasteboard.general.string = (runs.map(\.text) + [""] + lines).joined(separator: "\n")
+                    } label: {
                         Image(systemName: "doc.on.doc")
                     }
                     .accessibilityLabel("複製全部")
                 }
             }
         }
+    }
+
+    /// 一次處理：種類、總時間、音訊長度與倍數，下面列每一段花的時間
+    private func run(_ r: RunRecord) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(r.kind).font(.subheadline.weight(.semibold))
+                if r.status != "完成" {
+                    Text(r.status).font(.caption).foregroundStyle(.orange)
+                }
+                Spacer()
+                Text(r.date, format: .dateTime.month().day().hour().minute())
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(ProjectModel.clock(r.total)).font(.title3.monospacedDigit().bold())
+                if let m = r.media {
+                    Text("音訊 " + ProjectModel.clock(m)).font(.caption).foregroundStyle(.secondary)
+                }
+                if let x = r.ratio {
+                    Text(String(format: "%.2f 倍時長", x)).font(.caption.monospacedDigit()).foregroundStyle(Color.accentColor)
+                }
+            }
+            ForEach(Array(r.phases.enumerated()), id: \.offset) { _, p in
+                HStack {
+                    Text(p.title).font(.caption).lineLimit(1)
+                    Spacer()
+                    Text(RunRecord.short(p.seconds)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            let extra = [r.model, r.speed, r.device].compactMap { $0 }
+            if !extra.isEmpty {
+                Text(extra.joined(separator: " · ")).font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
