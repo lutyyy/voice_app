@@ -27,7 +27,7 @@ struct TranscriptDocView: View {
         var end: Double { words.last?.end ?? 0 }
     }
 
-    /// 換說話者、停頓超過 2 秒或段落太長（約 180 字）就換段；只在句子交界換
+    /// 換說話者、停頓超過 1.5 秒或段落超過約 100 字就換段；只在句子交界換（像 Otter、Notta 的段落）
     static func paragraphs(_ words: [Word], speakers: [Int?]?) -> [Paragraph] {
         var out: [Paragraph] = []
         var chars = 0
@@ -35,7 +35,7 @@ struct TranscriptDocView: View {
             let sp = speakers?[i] ?? nil
             if var last = out.last, let prev = last.words.last {
                 let newSentence = w.seg != prev.seg
-                let breakHere = sp != last.speaker || (newSentence && (w.start - prev.end > 2 || chars > 180))
+                let breakHere = sp != last.speaker || (newSentence && (w.start - prev.end > 1.5 || chars > 100))
                 if !breakHere {
                     last.words.append(w)
                     out[out.count - 1] = last
@@ -98,6 +98,7 @@ struct TranscriptDocView: View {
             }
             Button("取消", role: .cancel) {}
         }
+        .onAppear { model.punctuateIfNeeded() }
         .onDisappear { player.stop() }
     }
 

@@ -559,7 +559,9 @@ final class ProjectModel: ObservableObject {
                 w.reason = ""
                 return w
             }
-            Review.mergeShortSentences(&p)
+            // 依停頓補標點、分句（Whisper 中文常常整段沒有標點）
+            Punctuate.apply(&p)
+            meta.punctuated = true
             if wantsSpeakers && speakerTurns.isEmpty {
                 enter("diarize")
                 say("辨識說話者（第一次會下載模型）…", 0)
@@ -599,6 +601,17 @@ final class ProjectModel: ObservableObject {
         return out
     }
 
+    /// 舊的逐字稿專案（還沒補標點的）打開時補一次
+    func punctuateIfNeeded() {
+        guard meta.isTranscript, meta.punctuated != true, !plan.isEmpty, !isBusy else { return }
+        var p = plan
+        Punctuate.apply(&p)
+        plan = p
+        try? save(p, "plan.json")
+        meta.punctuated = true
+        saveMeta()
+    }
+
     /// 一定是語助詞（嗯、呃…）：逐字稿可以選擇去掉
     nonisolated static func isFiller(_ w: Word) -> Bool {
         let n = TextRules.norm(w.text)
@@ -614,9 +627,14 @@ final class ProjectModel: ObservableObject {
     func convertToEdit() {
         guard !isBusy, meta.isTranscript else { return }
         if var words = try? load([Word].self, "words.json") {
-            var edits: [String: String] = [:]
-            for w in plan { if let e = w.edited { edits["\(w.start)|\(w.text)"] = e } }
-            for i in words.indices { words[i].edited = edits["\(words[i].start)|\(words[i].text)"] ?? words[i].edited }
+            // 逐字稿頁補的標點、改過的錯字都帶過去（同一個開始時間就是同一個字）
+            var byStart: [Double: Word] = [:]
+            for w in plan { byStart[w.start] = w }
+            for i in words.indices {
+                guard let w = byStart[words[i].start] else { continue }
+                if TextRules.norm(w.text) == TextRules.norm(words[i].text) { words[i].text = w.text }
+                words[i].edited = w.edited ?? words[i].edited
+            }
             try? save(words, "words.json")
         }
         meta.transcriptOnly = false
@@ -1256,7 +1274,7 @@ final class ProjectModel: ObservableObject {
         }
     }
 
-    static func clock(_ t: Double) -> String {
+    nonisolated static func clock(_ t: Double) -> String {
         let t = max(0, t)
         let m = Int(t) / 60, s = Int(t) % 60
         return m >= 60 ? String(format: "%d:%02d:%02d", m / 60, m % 60, s) : String(format: "%d:%02d", m, s)

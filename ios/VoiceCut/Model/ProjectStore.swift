@@ -33,6 +33,8 @@ struct ProjectMeta: Codable, Identifiable, Equatable {
     var vocab: [String]?
     /// 中英夾雜：英文盡量保留英文
     var mixedLang: Bool?
+    /// 逐字稿已經依停頓補過標點、分過句
+    var punctuated: Bool?
 
     var displayName: String { (name as NSString).deletingPathExtension }
     var isTranscript: Bool { transcriptOnly == true }
