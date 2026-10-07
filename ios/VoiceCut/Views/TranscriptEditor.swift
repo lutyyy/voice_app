@@ -117,7 +117,7 @@ struct TranscriptEditor: View {
             // 播放時逐字稿跟著捲到正在播的那句
             .onChange(of: playingSentence(all)) { _, id in
                 guard let id, player.playingID == Self.playAllID else { return }
-                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: .center) }
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.3)) }
             }
         }
         .alert("說話者名稱", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
@@ -238,7 +238,7 @@ struct TranscriptEditor: View {
                 }
             }
             if !hintSeen {
-                Text("點字切換剪／留 · 長按試聽、改字或還原 · 左右滑整句 · 點時間從那句播")
+                Text("點字切換剪／留 · 點 ▶ 時間從那句播 · 長按字可從那裡播、改字或還原 · 左右滑整句")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -333,16 +333,21 @@ struct TranscriptEditor: View {
                     Self.playAll(model, player, from: max(0, s.start - 0.15), cutOnly: playCut)
                 }
             } label: {
-                Text(ProjectModel.clock(s.start))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(here ? Color.accentColor : Color.secondary)
-                    .padding(.trailing, 8)
-                    .padding(.vertical, 3)
+                HStack(spacing: 3) {
+                    Image(systemName: here ? "pause.fill" : "play.fill").font(.system(size: 8, weight: .bold))
+                    Text(ProjectModel.clock(s.start)).font(.caption.monospacedDigit())
+                }
+                .foregroundStyle(here ? Color.black : Color.accentColor)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(here ? Color.accentColor : Color.accentColor.opacity(0.14), in: Capsule())
+                .padding(.trailing, 8)
             }
             .buttonStyle(.borderless)
             .accessibilityLabel(here ? "停止" : "從 \(ProjectModel.clock(s.start)) 開始播放")
-            ForEach(Array(s.words.enumerated()), id: \.offset) { _, w in
-                WordChip(word: w, playing: isPlaying(w)) { model.toggle(w, to: w.action == .cut) }
+            let cur = currentWord(s)
+            ForEach(Array(s.words.enumerated()), id: \.offset) { i, w in
+                WordChip(word: w, playing: i == cur) { model.toggle(w, to: w.action == .cut) }
                     .contextMenu { menu(w) }
                     .disabled(model.isBusy)
             }
@@ -355,9 +360,10 @@ struct TranscriptEditor: View {
         return t >= s.start - 0.2 && t < s.end + 0.2
     }
 
-    private func isPlaying(_ w: Word) -> Bool {
-        guard let t = player.current else { return false }
-        return t >= w.start && t < w.end
+    /// 正在唸的字：最後一個已經開始的字，亮到下一個字開始為止（字與字的空隙不會閃掉）
+    private func currentWord(_ s: Sentence) -> Int? {
+        guard let t = player.current, t >= s.start - 0.05, t < s.end + 0.3 else { return nil }
+        return s.words.lastIndex { $0.start <= t + 0.03 }
     }
 
     @ViewBuilder
@@ -366,8 +372,8 @@ struct TranscriptEditor: View {
         if !w.reason.isEmpty { Text(w.reason) }
         Text(String(format: "%.2f – %.2f 秒", w.start, w.end))
         Button(cut ? "保留" : "剪掉", systemImage: cut ? "checkmark" : "scissors") { model.toggle(w, to: cut) }
-        Button("試聽這裡", systemImage: "play") {
-            player.play(model.sourceURL, from: max(0, w.start - 0.6), to: w.end + 0.6, offset: model.sourceOffset, id: "w")
+        Button("從這裡播放", systemImage: "play") {
+            Self.playAll(model, player, from: max(0, w.start - 0.15), cutOnly: playCut)
         }
         if ProjectModel.isManual(w) {
             Button("還原自動判斷", systemImage: "arrow.uturn.backward") { model.restore(w) }
@@ -472,12 +478,13 @@ struct WordChip: View {
     private var cut: Bool { word.action == .cut }
 
     private var textColor: Color {
+        if playing { return Color.black }
         if cut { return Color.red.opacity(0.8) }
         return word.extra ? Color.secondary : Color.primary
     }
 
     private var fillColor: Color {
-        if playing { return Color.orange.opacity(0.35) }
+        if playing { return Color.accentColor }
         return cut ? Color.red.opacity(0.12) : Color.clear
     }
 
