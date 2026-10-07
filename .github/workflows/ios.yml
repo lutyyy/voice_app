@@ -136,9 +136,9 @@ jobs:
             --target "$SHA" --latest \
             --title "語音剪輯 $APP_VERSION" \
             --notes "SideStore 來源：https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/source.json"
-          # 只保留最近 5 個版本
+          # 只保留最近 5 個版本（兩次編譯同時在刪舊版時可能已被另一次刪掉，失敗不影響發布）
           gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^build-' | sort -t- -k2 -n -r \
-            | tail -n +6 | while read -r t; do gh release delete "$t" --yes --cleanup-tag; done
+            | tail -n +6 | while read -r t; do gh release delete "$t" --yes --cleanup-tag || true; done
       - uses: actions/upload-artifact@v4
         with:
           name: VoiceCut-unsigned-ipa
