@@ -131,9 +131,11 @@ public enum Review {
     /// 給 Claude 的完整文字：指令＋第一部分逐句稿＋第二部分疑似贅詞
     /// names：句子編號 → 說話者名稱（有辨識說話者時，讓 Claude 分得出誰在附和誰）
     public static func sentencesText(_ words: [Word], names: [Int: String]? = nil) -> String {
-        let lines = sentences(words).map {
-            "S" + pad3($0.id) + " [" + String(formatTime($0.start).prefix(8)) + "] "
-                + (names?[$0.id].map { $0 + "：" } ?? "") + $0.text
+        let lines = sentences(words).map { (s: Sentence) -> String in
+            let time: String = String(formatTime(s.start).prefix(8))
+            var who = ""
+            if let n = names?[s.id] { who = n + "：" }
+            return "S" + pad3(s.id) + " [" + time + "] " + who + s.text
         }
         let shown = words.filter { $0.action != .cut }
         var rlines: [String] = []
