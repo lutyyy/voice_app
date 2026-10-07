@@ -6,10 +6,12 @@ import SwiftUI
 struct RangeSelectView: View {
     let url: URL
     let initial: ClipRange?
-    /// 第一次選（新匯入的檔案）：沒有「取消」，只能用整段或選好範圍
+    /// 第一次選（新匯入的檔案）：取消時可以選擇刪掉這個專案
     let firstTime: Bool
     /// 範圍、影格率、說話人數（只有第一次選時有：1 = 一個人、0 = 自動、2 以上 = 指定）
     let onDone: (ClipRange?, Double?, Int?) -> Void
+    /// 第一次選時按「取消 › 刪除這個專案」
+    var onDiscard: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
     @State private var info: MediaInfo?
@@ -23,6 +25,7 @@ struct RangeSelectView: View {
     @State private var observer: Any?
     @State private var error: String?
     @State private var confirmShort = false
+    @State private var confirmCancel = false
     @State private var playToken: UUID?
     /// 放大倍率與畫面左緣的時間（放大後只顯示一段，方便微調）
     @State private var zoom = 1.0
@@ -89,13 +92,27 @@ struct RangeSelectView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    if firstTime {
-                        Button("用整段") { finish(nil) }
-                    } else {
-                        Button("取消") {
+                    Button("取消") {
+                        if firstTime {
+                            confirmCancel = true
+                        } else {
                             stop()
                             dismiss()
                         }
+                    }
+                    .confirmationDialog("取消新增？", isPresented: $confirmCancel, titleVisibility: .visible) {
+                        Button("刪除這個專案", role: .destructive) {
+                            stop()
+                            onDiscard()
+                            dismiss()
+                        }
+                        Button("保留，稍後再處理") {
+                            stop()
+                            dismiss()
+                        }
+                        Button("繼續選範圍", role: .cancel) {}
+                    } message: {
+                        Text("原始檔案不會受影響。")
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
@@ -107,7 +124,6 @@ struct RangeSelectView: View {
                 }
             }
         }
-        .interactiveDismissDisabled(firstTime)
         .alert("只處理 \(ProjectModel.clock(end - start))？", isPresented: $confirmShort) {
             Button("只處理這段") { finish(ClipRange(start: start, end: end)) }
             Button("處理整個檔案") { finish(nil) }

@@ -7,6 +7,8 @@ import UIKit
 struct ProjectView: View {
     @ObservedObject var model: ProjectModel
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var store: ProjectStore
+    @Environment(\.dismiss) private var dismiss
     @State private var showSettings = false
     @State private var showRange = false
     @State private var showLog = false
@@ -14,6 +16,7 @@ struct ProjectView: View {
     @State private var showSubtitles = false
     @State private var showCutSettings = false
     @State private var showAsk = false
+    @State private var discard = false
 
     var body: some View {
         content
@@ -36,10 +39,10 @@ struct ProjectView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { showSubtitles = true }
                 }
             }
-            .sheet(isPresented: $showRange) {
-                RangeSelectView(url: model.sourceURL, initial: model.meta.range, firstTime: model.needsRange) { r, fps, n in
-                    model.setRange(r, fps: fps, speakers: n)
-                }
+            .sheet(isPresented: $showRange, onDismiss: rangeDismissed) {
+                RangeSelectView(url: model.sourceURL, initial: model.meta.range, firstTime: model.needsRange,
+                                onDone: { r, fps, n in model.setRange(r, fps: fps, speakers: n) },
+                                onDiscard: { discard = true })
             }
             .alert("提示", isPresented: Binding(get: { model.notice != nil && !showExport && !showAsk },
                                               set: { if !$0 { model.notice = nil } })) {
@@ -54,6 +57,16 @@ struct ProjectView: View {
             }
             .onChange(of: settings.cutReview) { _, _ in model.markStale() }
             .onChange(of: settings.cut) { _, _ in model.markStale() }
+    }
+
+    /// 新專案還沒選範圍就關掉（取消或往下滑）：回到首頁；選了刪除就等返回動畫結束再刪
+    private func rangeDismissed() {
+        guard model.needsRange else { return }
+        dismiss()
+        if discard {
+            let meta = model.meta
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { store.delete(meta) }
+        }
     }
 
     @ViewBuilder
